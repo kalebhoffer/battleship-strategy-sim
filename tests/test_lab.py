@@ -209,3 +209,53 @@ def test_old_solve_fingerprints_unchanged_by_new_fields(tmp_path):
         "rules": Rules().describe(),
     }
     assert "salvo" not in Rules().describe() and "kind" not in cond.definition()
+
+
+LANES = """
+seed = "l"
+batch_games = 40
+
+[[condition]]
+id = "quick"
+shooters = ["random", "hunt-target"]
+
+[[condition]]
+id = "careful"
+shooters = ["probability-map", "bayes:3"]
+rules = { feedback = "sink-only" }
+batch = 10
+lane = "slow"
+
+[[condition]]
+id = "duel"
+kind = "race"
+shooters = ["hunt-target", "random"]
+"""
+
+
+def test_slow_lane_runs_alongside_and_stays_reproducible(tmp_path):
+    config = tmp_path / "live.toml"
+    config.write_text(LANES)
+    logs = []
+    state = run_lab(config, tmp_path / "state", tmp_path / "pub.json", workers=3,
+                    publish_every=0, max_batches=2, log=logs.append)
+    assert any("1 slow on 1" in line and "2 fast on 2" in line for line in logs)
+    assert state["conditions"]["quick"]["games"] == 80
+    assert state["conditions"]["careful"]["games"] == 20
+    assert state["conditions"]["duel"]["games"] == 80
+    snap = json.loads((tmp_path / "pub.json").read_text())
+    careful = snap["conditions"][1]
+    out = tmp_path / "replay"
+    main([*shlex.split(careful["reproduce"])[1:], "--workers", "1", "--out", str(out)])
+    offline = json.loads((out / "summary.json").read_text())
+    for s in careful["shooters"]:
+        assert s["mean"] == pytest.approx(offline["shooters"][s["name"]]["mean"])
+        assert s["ci95"] == pytest.approx(offline["shooters"][s["name"]]["ci95"])
+
+
+def test_lane_is_not_part_of_the_fingerprint(tmp_path):
+    config = tmp_path / "live.toml"
+    config.write_text(LANES)
+    careful = load_config(config).conditions[1]
+    assert careful.lane == "slow"
+    assert "lane" not in careful.definition()

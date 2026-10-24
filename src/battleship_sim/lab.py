@@ -23,6 +23,7 @@ import os
 import random
 import signal
 import subprocess
+import threading
 import time
 import tomllib
 from concurrent.futures import Executor, ProcessPoolExecutor
@@ -66,6 +67,8 @@ class Condition:
     batch: int | None = None  # games (or series) per batch, overriding the lab default
     # Bump to restart a condition after a code change its canary games don't reveal.
     revision: int = 0
+    # "slow" conditions run in their own lane with their own workers (scheduling only).
+    lane: str = "fast"
 
     def seed(self, base: str) -> str:
         return f"{base}/{self.id}"
@@ -128,7 +131,10 @@ def load_config(path: Path) -> LabConfig:
             length=int(c.get("length", 20)),
             batch=c.get("batch"),
             revision=int(c.get("revision", 0)),
+            lane=c.get("lane", "fast"),
         )
+        if cond.lane not in ("fast", "slow"):
+            raise ValueError(f"{cond.id}: lane must be fast or slow")
         for name in cond.shooters:
             make_shooter(name, cond.rules, random.Random(0))
         for name in {cond.placer, *cond.placers}:
@@ -480,58 +486,111 @@ def run_lab(
     upload_to: str | None = None,
     commit: str | None = None,
     log=print,
+    slow_workers: int | None = None,
 ) -> dict:
+    """Play every condition forever, in two lanes that run side by side.
+
+    Conditions marked `lane = "slow"` (the Bayesian shooters under the harder rules) get
+    their own pool of `slow_workers`, and the rest share the other workers, so the fast
+    conditions never wait for a slow batch. Within a lane, conditions take turns, one
+    batch at a time, so each condition's games stay numbered 0, 1, 2, ... with no gaps.
+    """
     config = load_config(config_path)
     state_path = state_dir / "state.json"
     state = load_state(state_path)
-    stop = False
+    lock = threading.Lock()
+    stop = threading.Event()
 
     def _stop(*_):
-        nonlocal stop
-        stop = True
+        stop.set()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, _stop)
 
+    lanes = {
+        "fast": [c for c in config.conditions if c.lane != "slow"],
+        "slow": [c for c in config.conditions if c.lane == "slow"],
+    }
+    if not lanes["slow"]:
+        sizes = {"fast": workers, "slow": 0}
+    elif not lanes["fast"]:
+        sizes = {"fast": 0, "slow": workers}
+    else:
+        slow = slow_workers if slow_workers is not None else max(1, workers // 4)
+        slow = min(max(1, slow), max(1, workers - 1))
+        sizes = {"fast": max(1, workers - slow), "slow": slow}
+
     def publish() -> None:
-        _write_json(publish_path, snapshot(config, state, commit))
+        with lock:
+            snap = snapshot(config, state, commit)
+            _write_json(state_path, state)
+            total = sum(c["games"] for c in state["conditions"].values())
+        _write_json(publish_path, snap)
         if upload_to:
             upload(publish_path, upload_to, log)
+        log(f"lab: {total:,} games published")
 
-    log(f"lab: {len(config.conditions)} conditions, {workers} workers, commit {commit}")
-    last_publish = 0.0
-    batches = 0
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        sync_fingerprints(config, state, log, pool)
-        while not stop and (max_batches is None or batches < max_batches):
-            for cond in config.conditions:
-                cs = state["conditions"][cond.id]
-                if cond.kind == "race":
-                    tally = RaceTally(**cs["race"])
-                    for _, r in _run_kind_batch(pool, workers, config, cond, tally.games):
-                        tally.add(r)
-                    cs["race"] = asdict(tally)
-                    cs["games"] = tally.games
-                elif cond.kind == "series":
-                    tally = SeriesTally(**cs["series"])
-                    for _, result in _run_kind_batch(pool, workers, config, cond,
-                                                     tally.series):
-                        tally.add(result)
-                    cs["series"] = asdict(tally)
-                    cs["games"] = tally.series * cond.length
-                else:
-                    for _, results in _run_batch(pool, workers, config, cond, cs["games"]):
-                        add_game(cs, results)
-                if stop:
+    def run_lane(conditions: list[Condition], pool: Executor, n: int) -> None:
+        batches = 0
+        while not stop.is_set() and (max_batches is None or batches < max_batches):
+            for cond in conditions:
+                if stop.is_set():
                     break
+                play_batch(cond, pool, n)
             batches += 1
-            _write_json(state_path, state)
-            if time.monotonic() - last_publish >= publish_every or stop:
+
+    def play_batch(cond: Condition, pool: Executor, n: int) -> None:
+        # Only this lane touches this condition, so reading its start is safe unlocked.
+        cs = state["conditions"][cond.id]
+        if cond.kind == "race":
+            start = cs["race"]["games"]
+        elif cond.kind == "series":
+            start = cs["series"]["series"]
+        else:
+            start = cs["games"]
+        if cond.kind == "solve":
+            played = _run_batch(pool, n, config, cond, start)
+        else:
+            played = _run_kind_batch(pool, n, config, cond, start)
+        with lock:
+            if cond.kind == "race":
+                tally = RaceTally(**cs["race"])
+                for _, r in played:
+                    tally.add(r)
+                cs["race"] = asdict(tally)
+                cs["games"] = tally.games
+            elif cond.kind == "series":
+                tally = SeriesTally(**cs["series"])
+                for _, result in played:
+                    tally.add(result)
+                cs["series"] = asdict(tally)
+                cs["games"] = tally.series * cond.length
+            else:
+                for _, results in played:
+                    add_game(cs, results)
+
+    lane_text = ", ".join(f"{len(lanes[k])} {k} on {sizes[k]}" for k in lanes if lanes[k])
+    log(f"lab: {len(config.conditions)} conditions ({lane_text} workers), commit {commit}")
+    pools = {k: ProcessPoolExecutor(max_workers=sizes[k]) for k in lanes if lanes[k]}
+    try:
+        sync_fingerprints(config, state, log, pools.get("fast") or pools["slow"])
+        threads = [
+            threading.Thread(target=run_lane, args=(lanes[k], pools[k], sizes[k]),
+                             name=f"lab-{k}", daemon=True)
+            for k in pools
+        ]
+        for t in threads:
+            t.start()
+        last_publish = time.monotonic()
+        while any(t.is_alive() for t in threads):
+            for t in threads:
+                t.join(timeout=1.0)
+            if time.monotonic() - last_publish >= publish_every:
                 publish()
                 last_publish = time.monotonic()
-                total = sum(c["games"] for c in state["conditions"].values())
-                log(f"lab: {total:,} games published")
-    _write_json(state_path, state)
+    finally:
+        for pool in pools.values():
+            pool.shutdown(cancel_futures=True)
     publish()
     return state
 

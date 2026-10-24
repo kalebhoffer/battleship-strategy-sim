@@ -6,7 +6,9 @@
 # archives its totals and restarts it. Add a new id rather than editing a running one.
 # Labels and groups are display text only and can change freely. Conditions sharing a
 # group appear on one tab of the site's panel. `kind` is solve (default), race, or series;
-# `batch` overrides batch_games for slow conditions.
+# `batch` overrides batch_games for slow conditions, and `lane = "slow"` runs them on
+# their own workers so the rest never wait for them (scheduling only; no effect on
+# results or fingerprints).
 
 seed = "2026"
 batch_games = 500
@@ -126,6 +128,7 @@ label = "Sink-only rule"
 shooters = ["probability-map", "bayes", "info-gain"]
 rules = { feedback = "sink-only" }
 batch = 50
+lane = "slow"
 
 [[condition]]
 id = "study3-bayes-sweeps"
@@ -134,6 +137,7 @@ group = "Whole-fleet reasoning"
 label = "Does sampling more help? (sampler sweeps per shot)"
 shooters = ["bayes:10", "bayes", "bayes:200"]
 batch = 100
+lane = "slow"
 
 # Study 6: does going first matter? Two players race; each goes first in half the games.
 
@@ -197,6 +201,7 @@ label = "Hit or miss only, no sinks announced"
 shooters = ["hunt-target", "hunt-target-parity", "probability-map", "bayes"]
 rules = { feedback = "hit-only" }
 batch = 50
+lane = "slow"
 
 # Study 8: learning an opponent. Each series is 20 games against one opponent who always
 # hides ships the same way. Uniform is the control: there is no habit to learn.

@@ -333,6 +333,7 @@ def cmd_lab(args: argparse.Namespace) -> None:
         publish_every=args.publish_every,
         max_batches=args.max_batches,
         upload_to=args.upload,
+        slow_workers=args.slow_workers,
         commit=None if dirty else commit,
         log=lambda msg: print(f"{datetime.now(UTC):%Y-%m-%d %H:%M:%S} {msg}", flush=True),
     )
@@ -425,6 +426,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--publish", default="lab-state/public/battleship-live.json")
     p.add_argument("--workers", type=int, default=1)
     p.add_argument("--publish-every", type=float, default=60.0, help="seconds")
+    p.add_argument("--slow-workers", type=int,
+                   help="workers for lane = slow conditions (default: a quarter of --workers)")
     p.add_argument("--max-batches", type=int, help="stop after this many cycles (testing)")
     p.add_argument("--upload", help="rsync destination for the snapshot, e.g. host:/dir/")
     p.add_argument("--allow-dirty", action="store_true",
