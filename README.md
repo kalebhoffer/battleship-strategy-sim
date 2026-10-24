@@ -9,8 +9,8 @@ It's the code behind the
 [Battleship experiment](https://kalebhoffer.com/experiments/battleship-strategy) on
 kalebhoffer.com. The full research plan is in [docs/research-plan.md](docs/research-plan.md).
 
-> **Status: Phase 1 (engine and validation).** Only the two random baselines exist so
-> far. No findings have been published.
+> **Status: Phases 1 and 2 (engine, validation, and the shooters for Studies 1-3).**
+> No findings have been published.
 
 ## Quick start
 
@@ -34,6 +34,44 @@ Each run writes a folder under `results/`:
 | `games.csv` | One row per shooter per game: shots, first hit, repeats, and the shot each ship sank |
 | `summary.json` | Shots per shooter (mean with 95% CI, median, percentiles, worst case), exact values where known, and paired differences between shooters |
 | `run.json` | Everything needed to reproduce the run: shooters, placer, seed, rules, version, git commit |
+
+## Shooters
+
+| Name | Strategy |
+| --- | --- |
+| `random-repeat` | Any cell at random, even ones already fired at. The floor. |
+| `random` | A random cell not fired at yet. The baseline. |
+| `hunt-target` | Random search. After a hit, fires at the neighbors (up, right, down, left) until none are left. |
+| `hunt-target-parity` | Hunt and target, searching one color of a checkerboard. Every ship covers both colors. |
+| `adaptive-parity` | Hunt and target on diagonal stripes spaced by the shortest ship still afloat. |
+| `pattern-rows` | Hunt and target, searching A1, A2, ... row by row. |
+| `pattern-diagonal` | Hunt and target, sweeping every other diagonal from the top left. |
+| `pattern-spiral-in` | Hunt and target, spiraling from the edges to the center. |
+| `pattern-spiral-out` | Hunt and target, spiraling from the center to the edges. |
+| `probability-map` | Counts every position of every ship that fits what it has seen, and fires at the cell most likely to hold a ship. |
+
+Shooters with a hunt mode and a target mode also report hit rates for each mode.
+Strategy code is in [`shooters/`](src/battleship_sim/shooters).
+
+## Studies 1-3
+
+Each study is one run, so every shooter faces the same fleets. A million games of the
+Study 2 lineup takes about 11 minutes on a 10-core laptop and writes a ~500 MB CSV.
+
+```bash
+# Study 1: how bad is random fire?
+uv run battleship-sim run random-repeat random -n 1000000 --seed study1
+
+# Study 2: hunt, target, and the checkerboard (plus human search patterns)
+uv run battleship-sim run random hunt-target hunt-target-parity adaptive-parity \
+  pattern-rows pattern-diagonal pattern-spiral-in pattern-spiral-out -n 1000000 --seed study2
+
+# Study 3: probability maps, under the official rules and the common sink-only rule
+uv run battleship-sim run hunt-target hunt-target-parity adaptive-parity probability-map \
+  -n 1000000 --seed study3
+uv run battleship-sim run hunt-target hunt-target-parity adaptive-parity probability-map \
+  -n 1000000 --seed study3 --feedback sink-only
+```
 
 ## Fair comparisons
 

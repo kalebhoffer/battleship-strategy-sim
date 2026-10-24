@@ -12,7 +12,8 @@ import os
 import random
 import re
 import time
-from collections import defaultdict
+from array import array
+from collections import Counter, defaultdict
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
@@ -107,7 +108,13 @@ def ship_columns(rules: Rules) -> list[str]:
 
 
 def csv_fields(rules: Rules) -> list[str]:
-    return ["game", "shooter", "shots", "first_hit", "repeats", "capped", *ship_columns(rules)]
+    return [
+        "game", "shooter", "shots", "first_hit", "repeats", "capped",
+        *MODE_COLUMNS, *ship_columns(rules),
+    ]
+
+
+MODE_COLUMNS = ("hunt_shots", "hunt_hits", "target_shots", "target_hits")
 
 
 def result_row(game: int, shooter: str, r: SolveResult, rules: Rules) -> dict[str, object]:
@@ -119,6 +126,9 @@ def result_row(game: int, shooter: str, r: SolveResult, rules: Rules) -> dict[st
         "repeats": r.repeats,
         "capped": int(r.capped),
     }
+    for column in MODE_COLUMNS:
+        value = getattr(r, column)
+        row[column] = "" if value is None else value
     for column, at in zip(ship_columns(rules), r.sunk_at, strict=True):
         row[column] = "" if at is None else at
     return row
@@ -144,43 +154,56 @@ def run_to_csv(
 
 def summarize(csv_path: Path, rules: Rules) -> dict[str, object]:
     """Shot-count distribution per shooter, exact values where known, and paired
-    differences between every pair of shooters on the same fleets."""
-    shots: dict[str, dict[int, int]] = defaultdict(dict)
-    first_hits: dict[str, list[int]] = defaultdict(list)
-    capped: dict[str, int] = defaultdict(int)
-    sunk: dict[str, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
+    differences between every pair of shooters on the same fleets.
+
+    Stores two compact arrays per shooter and running sums for everything else, so a
+    million-game run summarizes in modest memory.
+    """
+    games: dict[str, array] = defaultdict(lambda: array("l"))
+    shots: dict[str, array] = defaultdict(lambda: array("l"))
+    sums: dict[str, Counter[str]] = defaultdict(Counter)  # column -> total
+    counts: dict[str, Counter[str]] = defaultdict(Counter)  # column -> rows with a value
     columns = ship_columns(rules)
+    summed = ("first_hit", "capped", *MODE_COLUMNS, *columns)
     with csv_path.open(newline="") as f:
         for row in csv.DictReader(f):
             name = row["shooter"]
-            shots[name][int(row["game"])] = int(row["shots"])
-            if row["first_hit"]:
-                first_hits[name].append(int(row["first_hit"]))
-            capped[name] += int(row["capped"])
-            for column in columns:
+            games[name].append(int(row["game"]))
+            shots[name].append(int(row["shots"]))
+            for column in summed:
                 if row[column]:
-                    sunk[name][column].append(int(row[column]))
+                    sums[name][column] += int(row[column])
+                    counts[name][column] += 1
+
+    def average(name: str, column: str) -> float | None:
+        n = counts[name][column]
+        return sums[name][column] / n if n else None
 
     shooters = {}
-    for name, by_game in shots.items():
-        values = sorted(by_game.values())
+    for name, values in shots.items():
+        ordered = sorted(values)
         mean, low, high = mean_ci(values)
         entry: dict[str, object] = {
             "games": len(values),
             "mean": mean,
             "ci95": [low, high],
             "sd": stdev(values, mean),
-            "median": quantile(values, 0.5),
-            "p5": quantile(values, 0.05),
-            "p95": quantile(values, 0.95),
-            "min": values[0],
-            "max": values[-1],
-            "capped": capped[name],
-            "mean_first_hit": mean_ci(first_hits[name])[0] if first_hits[name] else None,
-            "mean_sunk_at": {
-                c: (mean_ci(sunk[name][c])[0] if sunk[name][c] else None) for c in columns
-            },
+            "median": quantile(ordered, 0.5),
+            "p5": quantile(ordered, 0.05),
+            "p95": quantile(ordered, 0.95),
+            "min": ordered[0],
+            "max": ordered[-1],
+            "capped": sums[name]["capped"],
+            "mean_first_hit": average(name, "first_hit"),
+            "mean_sunk_at": {c: average(name, c) for c in columns},
         }
+        if counts[name]["hunt_shots"]:
+            m = sums[name]
+            entry["hunt_hit_rate"] = m["hunt_hits"] / m["hunt_shots"] if m["hunt_shots"] else None
+            entry["target_hit_rate"] = (
+                m["target_hits"] / m["target_shots"] if m["target_shots"] else None
+            )
+            entry["share_of_shots_targeting"] = m["target_shots"] / sum(values)
         known = exact_mean(name, rules)
         if known is not None:
             entry["exact_mean"] = known
@@ -188,8 +211,12 @@ def summarize(csv_path: Path, rules: Rules) -> dict[str, object]:
 
     paired = []
     for a, b in itertools.combinations(shots, 2):
-        common = shots[a].keys() & shots[b].keys()
-        diffs = [shots[a][g] - shots[b][g] for g in sorted(common)]
+        if games[a] == games[b]:  # the normal case: rows in the same game order
+            diffs = array("l", (x - y for x, y in zip(shots[a], shots[b], strict=True)))
+        else:
+            other = dict(zip(games[b], shots[b], strict=True))
+            diffs = array("l", (x - other[g] for g, x in zip(games[a], shots[a], strict=True)
+                                if g in other))
         mean, low, high = mean_ci(diffs)
         paired.append({"a": a, "b": b, "games": len(diffs), "mean_a_minus_b": mean,
                        "ci95": [low, high]})

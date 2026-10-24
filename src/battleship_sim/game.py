@@ -6,7 +6,7 @@ learns about the board solely through the `ShotResult`s passed to `observe`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from battleship_sim.board import Layout, cells_of
@@ -16,6 +16,8 @@ DEFAULT_MAX_SHOTS = 10_000  # only reachable by shooters that may repeat cells
 
 
 class Shooter(Protocol):
+    """Optionally also has a `targeting` property: True while following up a hit."""
+
     def fire(self) -> int: ...
 
     def observe(self, cell: int, result: ShotResult) -> None: ...
@@ -65,6 +67,11 @@ class SolveResult:
     sunk_at: tuple[int | None, ...]  # shot number each ship sank, in fleet order
     repeats: int  # shots at cells already fired at
     capped: bool  # hit the shot cap before sinking the fleet
+    # Shots and hits while hunting vs following up a hit. None for shooters without modes.
+    hunt_shots: int | None = None
+    hunt_hits: int | None = None
+    target_shots: int | None = None
+    target_hits: int | None = None
 
 
 def solve(
@@ -76,7 +83,10 @@ def solve(
     first_hit = None
     repeats = 0
     shots = 0
+    has_modes = hasattr(shooter, "targeting")
+    modes = {False: [0, 0], True: [0, 0]}  # targeting -> [shots, hits]
     while ocean.afloat and shots < max_shots:
+        targeting = bool(shooter.targeting) if has_modes else False
         cell = shooter.fire()
         shots += 1
         if cell in fired:
@@ -85,7 +95,18 @@ def solve(
         told, sunk = ocean.fire(cell)
         if told.hit and first_hit is None:
             first_hit = shots
+        modes[targeting][0] += 1
+        modes[targeting][1] += told.hit
         if sunk is not None:
             sunk_at[sunk] = shots
         shooter.observe(cell, told)
-    return SolveResult(shots, first_hit, tuple(sunk_at), repeats, capped=bool(ocean.afloat))
+    result = SolveResult(shots, first_hit, tuple(sunk_at), repeats, capped=bool(ocean.afloat))
+    if not has_modes:
+        return result
+    return replace(
+        result,
+        hunt_shots=modes[False][0],
+        hunt_hits=modes[False][1],
+        target_shots=modes[True][0],
+        target_hits=modes[True][1],
+    )

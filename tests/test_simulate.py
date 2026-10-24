@@ -53,7 +53,8 @@ def test_csv_and_summary(tmp_path):
     timing = {}
     path = run_to_csv(config, tmp_path / "games.csv", timing=timing)
     lines = path.read_text().splitlines()
-    assert lines[0].startswith("game,shooter,shots,first_hit,repeats,capped,sunk_carrier")
+    assert lines[0].startswith("game,shooter,shots,first_hit,repeats,capped,hunt_shots,")
+    assert "sunk_carrier" in lines[0]
     assert "sunk_patrol_boat" in lines[0]
     assert len(lines) == 1 + 200 * 2
     assert set(timing) == {"random", "random-repeat"}
