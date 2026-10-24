@@ -12,6 +12,7 @@ from battleship_sim.stats import quantile
 CONFIG = """
 seed = "t"
 batch_games = 40
+batch_seconds = 0  # fixed batches, so counts are exact
 
 [[condition]]
 id = "a"
@@ -151,6 +152,7 @@ def test_upload_reports_rsync_errors(tmp_path):
 KINDS = """
 seed = "k"
 batch_games = 30
+batch_seconds = 0  # fixed batches, so counts are exact
 
 [[condition]]
 id = "solo"
@@ -214,6 +216,7 @@ def test_old_solve_fingerprints_unchanged_by_new_fields(tmp_path):
 LANES = """
 seed = "l"
 batch_games = 40
+batch_seconds = 0  # fixed batches, so counts are exact
 
 [[condition]]
 id = "quick"
@@ -259,3 +262,20 @@ def test_lane_is_not_part_of_the_fingerprint(tmp_path):
     careful = load_config(config).conditions[1]
     assert careful.lane == "slow"
     assert "lane" not in careful.definition()
+
+
+def test_batches_grow_to_fill_the_time_budget(tmp_path):
+    config = tmp_path / "live.toml"
+    config.write_text(CONFIG.replace("batch_games = 40", "batch_games = 10").replace(
+        "batch_seconds = 0", "batch_seconds = 1"))
+    state = run_lab(config, tmp_path / "state", tmp_path / "pub.json", workers=1,
+                    publish_every=0, max_batches=3, log=lambda _: None)
+    # A cheap condition plays far more than 3 x 10 games once batches are sized by time.
+    assert state["conditions"]["a"]["games"] > 300
+    snap = json.loads((tmp_path / "pub.json").read_text())
+    out = tmp_path / "replay"
+    cond = snap["conditions"][0]
+    main([*shlex.split(cond["reproduce"])[1:], "--workers", "1", "--out", str(out)])
+    offline = json.loads((out / "summary.json").read_text())
+    for s in cond["shooters"]:
+        assert s["mean"] == pytest.approx(offline["shooters"][s["name"]]["mean"])

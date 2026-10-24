@@ -11,7 +11,10 @@
 # results or fingerprints).
 
 seed = "2026"
+# The first batch of each condition is batch_games (or its own `batch`); after that each
+# batch is sized to take about batch_seconds, so every condition gets a fair share of time.
 batch_games = 500
+batch_seconds = 3
 
 [[condition]]
 id = "study1-random"

@@ -47,6 +47,7 @@ STATUS = "Live simulation output. Preliminary, not reviewed findings."
 REPOSITORY = "https://github.com/kalebhoffer/battleship-strategy-sim"
 CANARY_GAMES = 300
 CANARY_SERIES = 10
+MAX_BATCH = 50_000
 CDF_SHOTS = 100  # the published distribution covers 0..100 shots
 
 
@@ -92,8 +93,9 @@ class Condition:
 @dataclass(frozen=True)
 class LabConfig:
     seed: str
-    batch_games: int
+    batch_games: int  # first batch per condition; later batches are sized by time
     conditions: tuple[Condition, ...]
+    batch_seconds: float = 3.0  # target wall time per batch; 0 = fixed-size batches
 
 
 def _rules(raw: dict) -> Rules:
@@ -144,7 +146,8 @@ def load_config(path: Path) -> LabConfig:
     if len(ids) != len(set(ids)):
         raise ValueError("condition ids must be unique")
     return LabConfig(
-        str(raw.get("seed", "0")), int(raw.get("batch_games", 1000)), tuple(conditions)
+        str(raw.get("seed", "0")), int(raw.get("batch_games", 1000)), tuple(conditions),
+        float(raw.get("batch_seconds", 3.0)),
     )
 
 
@@ -500,6 +503,7 @@ def run_lab(
     state = load_state(state_path)
     lock = threading.Lock()
     stop = threading.Event()
+    pace: dict[str, float] = {}  # games (series, for series conditions) per second
 
     def _stop(*_):
         stop.set()
@@ -548,10 +552,22 @@ def run_lab(
             start = cs["series"]["series"]
         else:
             start = cs["games"]
-        if cond.kind == "solve":
-            played = _run_batch(pool, n, config, cond, start)
+        # Size each batch to take about batch_seconds, from this condition's recent pace,
+        # so cheap conditions play many games per turn and expensive ones few. Batch size
+        # never affects results: games are numbered and always played in order.
+        if cond.id in pace and config.batch_seconds > 0:
+            count = max(1, min(MAX_BATCH, round(pace[cond.id] * config.batch_seconds)))
+            if cond.kind != "series":
+                count = max(n, count)
         else:
-            played = _run_kind_batch(pool, n, config, cond, start)
+            count = first_batch(config, cond)
+        began = time.monotonic()
+        if cond.kind == "solve":
+            played = _run_batch(pool, n, config, cond, start, count)
+        else:
+            played = _run_kind_batch(pool, n, config, cond, start, count)
+        rate = count / max(time.monotonic() - began, 1e-3)
+        pace[cond.id] = rate if cond.id not in pace else (pace[cond.id] + rate) / 2
         with lock:
             if cond.kind == "race":
                 tally = RaceTally(**cs["race"])
@@ -595,14 +611,19 @@ def run_lab(
     return state
 
 
+def first_batch(config: LabConfig, cond: Condition) -> int:
+    """Size of a condition's first batch: games, or series for a series condition."""
+    if cond.kind == "series":
+        return cond.batch or max(1, config.batch_games // cond.length)
+    return cond.batch or config.batch_games
+
+
 def _run_kind_batch(pool: Executor, workers: int, config: LabConfig, cond: Condition,
-                    start: int) -> list:
-    """A batch of races, or of series, numbered from `start`."""
+                    start: int, count: int) -> list:
+    """`count` races, or series, numbered from `start`."""
     if cond.kind == "race":
-        count = cond.batch or config.batch_games
         cfg, chunk = _race_config(cond, cond.seed(config.seed)), race_chunk
     else:
-        count = cond.batch or max(1, config.batch_games // cond.length)
         cfg, chunk = _series_config(cond, cond.seed(config.seed)), series_chunk
     stop = start + count
     size = max(1, math.ceil(count / workers))
@@ -611,9 +632,9 @@ def _run_kind_batch(pool: Executor, workers: int, config: LabConfig, cond: Condi
 
 
 def _run_batch(
-    pool: Executor, workers: int, config: LabConfig, cond: Condition, start: int
+    pool: Executor, workers: int, config: LabConfig, cond: Condition, start: int, count: int
 ) -> list[tuple[int, list[tuple[str, SolveResult]]]]:
-    stop = start + (cond.batch or config.batch_games)
+    stop = start + count
     sim = SimConfig(cond.shooters, cond.placer, stop, cond.seed(config.seed), cond.rules)
     size = max(1, math.ceil((stop - start) / workers))
     bounds = [(s, min(s + size, stop)) for s in range(start, stop, size)]
