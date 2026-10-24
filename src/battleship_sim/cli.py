@@ -185,6 +185,28 @@ def cmd_validate(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_lab(args: argparse.Namespace) -> None:
+    from battleship_sim.lab import git_commit, run_lab
+
+    commit, dirty = git_commit(Path(__file__).parent)
+    if dirty and not args.allow_dirty:
+        sys.exit(
+            "battleship-sim lab: the source has uncommitted changes, so published numbers "
+            "could not be reproduced from a commit. Commit first, or pass --allow-dirty."
+        )
+    run_lab(
+        Path(args.config),
+        Path(args.state_dir),
+        Path(args.publish),
+        workers=args.workers,
+        publish_every=args.publish_every,
+        max_batches=args.max_batches,
+        upload_to=args.upload,
+        commit=None if dirty else commit,
+        log=lambda msg: print(f"{datetime.now(UTC):%Y-%m-%d %H:%M:%S} {msg}", flush=True),
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="battleship-sim", description=__doc__)
     parser.add_argument("--version", action="version", version=__version__)
@@ -222,6 +244,18 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--samples", type=int, default=200_000)
     p.add_argument("--quick", action="store_true", help="skip the slow 10x10 exact counts")
     p.set_defaults(func=cmd_validate)
+
+    p = sub.add_parser("lab", help="run experiments continuously and publish live stats")
+    p.add_argument("--config", default="experiments/live.toml")
+    p.add_argument("--state-dir", default="lab-state")
+    p.add_argument("--publish", default="lab-state/public/battleship-live.json")
+    p.add_argument("--workers", type=int, default=1)
+    p.add_argument("--publish-every", type=float, default=60.0, help="seconds")
+    p.add_argument("--max-batches", type=int, help="stop after this many cycles (testing)")
+    p.add_argument("--upload", help="rsync destination for the snapshot, e.g. host:/dir/")
+    p.add_argument("--allow-dirty", action="store_true",
+                   help="run even with uncommitted source changes (no commit is published)")
+    p.set_defaults(func=cmd_lab)
 
     args = parser.parse_args(argv)
     try:

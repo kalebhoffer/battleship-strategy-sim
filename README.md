@@ -73,6 +73,29 @@ uv run battleship-sim run hunt-target hunt-target-parity adaptive-parity probabi
   -n 1000000 --seed study3 --feedback sink-only
 ```
 
+## Live lab
+
+`battleship-sim lab` plays the conditions in [`experiments/live.toml`](experiments/live.toml)
+forever, in batches, and writes a JSON snapshot every minute: means with confidence
+intervals, medians, percentiles, the distribution of shots, paired differences, and the
+exact command that reproduces every number. The kalebhoffer.com experiment page shows it,
+labeled as preliminary.
+
+```bash
+uv run battleship-sim lab --workers 8                       # snapshot in lab-state/public/
+uv run battleship-sim lab --workers 8 --upload host:/dir/   # also rsync it to a web server
+```
+
+- **Reproducible.** Each condition has its own seed and numbers its games from 0, so the
+  snapshot's `reproduce` command replays exactly the games behind it. A test checks that
+  the lab's statistics match an offline `run` of the same games.
+- **Never mixes engine versions.** Each condition is fingerprinted by replaying fixed
+  canary games. If a code change alters how a condition plays, its totals are archived
+  and it starts over. Conditions the change didn't affect keep counting.
+- **Refuses uncommitted code**, so every published number traces to a commit.
+
+[`deploy/macos/`](deploy/macos) runs it as a low-priority background job on a Mac.
+
 ## Fair comparisons
 
 Every shooter in a run faces **the same fleets**. Game *i*'s fleet depends only on the

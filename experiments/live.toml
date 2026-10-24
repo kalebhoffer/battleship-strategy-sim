@@ -1,0 +1,43 @@
+# Conditions the live lab cycles through forever. Each condition keeps its own seed
+# ("<seed>/<id>") and game numbering from 0, so every published number can be replayed
+# with the `reproduce` command in the snapshot.
+#
+# Changing a condition's shooters, placer, or rules changes its fingerprint, which
+# archives its totals and restarts it. Add a new id rather than editing a running one.
+
+seed = "2026"
+batch_games = 500
+
+[[condition]]
+id = "study1-random"
+study = "1"
+label = "Random fire"
+shooters = ["random-repeat", "random"]
+
+[[condition]]
+id = "study2-search"
+study = "2"
+label = "Hunt, target, and search patterns"
+shooters = [
+  "random",
+  "hunt-target",
+  "hunt-target-parity",
+  "adaptive-parity",
+  "pattern-rows",
+  "pattern-diagonal",
+  "pattern-spiral-in",
+  "pattern-spiral-out",
+]
+
+[[condition]]
+id = "study3-official"
+study = "3"
+label = "Probability map, official rules"
+shooters = ["hunt-target", "hunt-target-parity", "adaptive-parity", "probability-map"]
+
+[[condition]]
+id = "study3-sink-only"
+study = "3"
+label = "Probability map, sink-only rule"
+shooters = ["hunt-target", "hunt-target-parity", "adaptive-parity", "probability-map"]
+rules = { feedback = "sink-only" }
