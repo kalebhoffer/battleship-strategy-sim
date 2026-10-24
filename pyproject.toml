@@ -1,0 +1,43 @@
+[project]
+name = "battleship-strategy-sim"
+version = "0.1.0"
+description = "Monte Carlo simulator that tests Battleship shooting and ship placement strategies."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Kaleb Hoffer" }]
+keywords = ["battleship", "monte-carlo", "simulation", "search", "game-theory"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment :: Board Games",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/kalebhoffer/battleship-strategy-sim"
+Experiment = "https://kalebhoffer.com/experiments/battleship-strategy"
+
+[project.scripts]
+battleship-sim = "battleship_sim.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/battleship_sim"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
