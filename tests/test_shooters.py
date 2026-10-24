@@ -38,7 +38,12 @@ RULE_SETS = [
 ]
 
 
-@pytest.mark.parametrize("name", [n for n in SHOOTERS if n != "random-repeat"])
+# The Bayesian shooters run here with 5 sweeps (same code, faster); test_bayes.py checks
+# their beliefs against exact posteriors and runs them at full strength.
+FAST = {"bayes": "bayes:5", "info-gain": "info-gain:5"}
+
+
+@pytest.mark.parametrize("name", [FAST.get(n, n) for n in SHOOTERS if n != "random-repeat"])
 @pytest.mark.parametrize("rules", RULE_SETS, ids=lambda r: f"{r.size}-{r.feedback}-{r.touching}")
 def test_every_shooter_finishes_without_repeating(name, rules):
     for placer in ("uniform", "naive"):

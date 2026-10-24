@@ -41,3 +41,17 @@ def random_repeat_variance(ship_cells: int, cells: int) -> Fraction:
          for j in range(1, ship_cells + 1)),
         Fraction(0),
     )
+
+
+def first_player_wins_random(ship_cells: int, cells: int) -> Fraction:
+    """Chance that the first of two random shooters (one shot per turn) wins.
+
+    The first player's t-th shot comes before the second player's t-th, so the first
+    player wins exactly when it needs no more shots than the second: P(T1 <= T2) for two
+    independent random-fire shot counts.
+    """
+    cdf = random_fire_cdf(ship_cells, cells)
+    total = Fraction(0)
+    for t in range(1, cells + 1):
+        total += (cdf[t] - cdf[t - 1]) * (1 - cdf[t - 1])
+    return total

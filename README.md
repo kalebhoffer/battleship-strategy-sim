@@ -9,8 +9,9 @@ It's the code behind the
 [Battleship experiment](https://kalebhoffer.com/experiments/battleship-strategy) on
 kalebhoffer.com. The full research plan is in [docs/research-plan.md](docs/research-plan.md).
 
-> **Status: Phases 1-3 (engine, validation, shooters, placement styles, and the
-> shooter-placer game) plus a live lab.** No findings have been published.
+> **Status: all four phases built (engine, validation, shooters, placement styles,
+> the shooter-placer game, two-player races, Salvo, Bayesian shooters, and learning
+> across games) plus a live lab.** No findings have been published.
 
 ## Quick start
 
@@ -49,6 +50,9 @@ Each run writes a folder under `results/`:
 | `pattern-spiral-in` | Hunt and target, spiraling from the edges to the center. |
 | `pattern-spiral-out` | Hunt and target, spiraling from the center to the edges. |
 | `probability-map` | Counts every position of every ship that fits what it has seen, and fires at the cell most likely to hold a ship. |
+| `bayes` | Samples whole fleets consistent with everything it has been told (Gibbs sampling, checked against exact posteriors) and fires at the likeliest square. `bayes:N` sets the sampler sweeps per shot. |
+| `info-gain` | Same belief as `bayes`, but fires where the answer is most uncertain (highest outcome entropy). |
+| `opponent-aware` | A probability map that learns where one opponent hides ships over a series of games. |
 
 Shooters with a hunt mode and a target mode also report hit rates for each mode.
 Strategy code is in [`shooters/`](src/battleship_sim/shooters).
@@ -81,6 +85,22 @@ uv run battleship-sim worst-case probability-map --steps 500 --games 100
 The equilibrium solver reports the mixes and a lower and upper bound on the game's value,
 so you can see how close the approximation is. The `mix:` placer can then play the
 equilibrium mix.
+
+## Two players, Salvo, and learning (Studies 6-8)
+
+```bash
+# Study 6: does going first matter? Each player goes first in half the games.
+uv run battleship-sim race probability-map probability-map -n 100000 --seed study6
+
+# Study 7: Salvo, the official variant with one shot per ship still afloat
+uv run battleship-sim race probability-map hunt-target-parity -n 100000 --seed study7 --salvo
+
+# Study 8: 20 games each against 1,000 opponents who always hide ships on the edges
+uv run battleship-sim series opponent-aware probability-map --placer edges --series 1000
+```
+
+The race engine is checked against an exact answer: two random shooters, where the first
+player wins exactly when it needs no more shots than the second.
 
 ## Studies 1-3
 

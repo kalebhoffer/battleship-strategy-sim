@@ -40,6 +40,8 @@ class Rules:
     fleet: tuple[Ship, ...] = FLEET
     feedback: Feedback = Feedback.NAMED_HITS
     touching: bool = True  # False = ships may not touch, even diagonally
+    # Two-player games only: one shot per ship you still have afloat, each turn.
+    salvo: bool = False
 
     def __post_init__(self) -> None:
         if not 2 <= self.size <= 26:
@@ -69,6 +71,9 @@ class Rules:
             "fleet": [{"name": s.name, "length": s.length} for s in self.fleet],
             "feedback": str(self.feedback),
             "touching": self.touching,
+            # Listed only when on, so conditions defined before Salvo existed keep their
+            # fingerprints (lab.py hashes this description).
+            **({"salvo": True} if self.salvo else {}),
         }
 
 

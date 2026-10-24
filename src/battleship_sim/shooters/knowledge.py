@@ -20,6 +20,8 @@ class Knowledge:
         self.hits = 0
         self.sunk: set[int] = set()
         self._sink_cell: dict[int, int] = {}
+        # Hit cells as of the shot that sank each ship: a sunk ship lies within these.
+        self.hits_at_sink: dict[int, int] = {}
         # known[i]: cells certainly belonging to ship i
         self.known = [0] * len(rules.fleet)
 
@@ -35,6 +37,7 @@ class Knowledge:
         if result.sunk is not None:
             self.sunk.add(result.sunk)
             self._sink_cell[result.sunk] = cell
+            self.hits_at_sink[result.sunk] = self.hits
             if self.rules.feedback is Feedback.SINK_ONLY:
                 self._resolve_sunk()
 
@@ -56,15 +59,16 @@ class Knowledge:
         return self.hits & ~self.known_cells()
 
     def sunk_candidates(self, ship: int) -> list[int]:
-        """Positions a sunk ship could occupy: through its sinking shot, on hits only,
-        clear of cells known to be other ships."""
+        """Positions a sunk ship could occupy: through its sinking shot, on squares hit
+        by then, clear of cells known to be other ships."""
         cell = self._sink_cell[ship]
+        hit_by_then = self.hits_at_sink[ship]
         others = self.known_cells(exclude=ship)
         length = self.rules.fleet[ship].length
         return [
             p
             for p in placements(length, self.rules.size)
-            if p >> cell & 1 and p & self.hits == p and fits(p, others, self.rules)
+            if p >> cell & 1 and p & hit_by_then == p and fits(p, others, self.rules)
         ]
 
     def _resolve_sunk(self) -> None:

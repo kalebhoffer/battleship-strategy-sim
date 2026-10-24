@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from battleship_sim.game import Shooter
 from battleship_sim.rules import Rules
+from battleship_sim.shooters.bayes import DEFAULT_SWEEPS, bayes, info_gain
 from battleship_sim.shooters.hunt import (
     adaptive_parity,
     hunt_target,
@@ -19,7 +20,7 @@ from battleship_sim.shooters.hunt import (
     pattern,
 )
 from battleship_sim.shooters.naive import RandomRepeatShooter, RandomShooter
-from battleship_sim.shooters.probability import ProbabilityMap
+from battleship_sim.shooters.probability import OpponentAware, ProbabilityMap
 
 ShooterFactory = Callable[[Rules, random.Random], Shooter]
 
@@ -84,11 +85,37 @@ SHOOTERS: dict[str, ShooterSpec] = {
             ProbabilityMap,
             "Fires where ships are most likely to be, counting every position that fits.",
         ),
+        ShooterSpec(
+            "opponent-aware",
+            OpponentAware,
+            "A probability map that learns where one opponent hides ships, over a series "
+            "of games (see `battleship-sim series`). Its first game is a plain map.",
+        ),
+        ShooterSpec(
+            "bayes",
+            bayes(),
+            f"Samples whole fleets that fit everything seen; fires at the likeliest square. "
+            f"bayes:N uses N sampler sweeps per shot (default {DEFAULT_SWEEPS}).",
+        ),
+        ShooterSpec(
+            "info-gain",
+            info_gain(),
+            "Same belief as bayes, but fires where the answer is most uncertain. "
+            "info-gain:N sets the sweeps.",
+        ),
     )
 }
 
+# Shooters that take a number after a colon, e.g. bayes:200.
+PARAMETRIC = {"bayes": bayes, "info-gain": info_gain}
+
 
 def make_shooter(name: str, rules: Rules, rng: random.Random) -> Shooter:
+    base, _, arg = name.partition(":")
+    if arg and base in PARAMETRIC:
+        if not arg.isdigit() or int(arg) < 1:
+            raise ValueError(f"{base}:N needs a positive whole number, got {name!r}")
+        return PARAMETRIC[base](int(arg))(rules, rng)
     try:
         spec = SHOOTERS[name]
     except KeyError:

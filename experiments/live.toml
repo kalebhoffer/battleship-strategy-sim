@@ -4,7 +4,9 @@
 #
 # Changing a condition's shooters, placer, or rules changes its fingerprint, which
 # archives its totals and restarts it. Add a new id rather than editing a running one.
-# Labels are display text only and can change freely.
+# Labels and groups are display text only and can change freely. Conditions sharing a
+# group appear on one tab of the site's panel. `kind` is solve (default), race, or series;
+# `batch` overrides batch_games for slow conditions.
 
 seed = "2026"
 batch_games = 500
@@ -33,15 +35,20 @@ shooters = [
 [[condition]]
 id = "study3-official"
 study = "3"
-label = "Probability map"
+group = "Probability map"
+label = "Official rules"
 shooters = ["hunt-target", "hunt-target-parity", "adaptive-parity", "probability-map"]
 
 [[condition]]
 id = "study3-sink-only"
 study = "3"
-label = "Probability map (sink-only)"
+group = "Probability map"
+label = "Sink-only rule"
 shooters = ["hunt-target", "hunt-target-parity", "adaptive-parity", "probability-map"]
 rules = { feedback = "sink-only" }
+# 2026-10-24: restarted after a fix to how the probability map attributes hits to a ship
+# sunk earlier. 13 of the first 20,000 games played differently; old totals archived.
+revision = 2
 
 # Study 4: where to hide your ships. The same four shooters against each placement style.
 # Shown together on the site as one table (group).
@@ -101,3 +108,145 @@ group = "Hiding ships"
 label = "Low-odds squares"
 placer = "anti-density"
 shooters = ["random", "hunt-target", "hunt-target-parity", "probability-map"]
+
+# Study 3, continued: reasoning about the whole fleet at once (Phase 4).
+
+[[condition]]
+id = "study3-bayes"
+study = "3"
+group = "Whole-fleet reasoning"
+label = "Official rules"
+shooters = ["probability-map", "bayes", "info-gain"]
+
+[[condition]]
+id = "study3-bayes-sink-only"
+study = "3"
+group = "Whole-fleet reasoning"
+label = "Sink-only rule"
+shooters = ["probability-map", "bayes", "info-gain"]
+rules = { feedback = "sink-only" }
+batch = 100
+
+[[condition]]
+id = "study3-bayes-sweeps"
+study = "3"
+group = "Whole-fleet reasoning"
+label = "Does sampling more help? (sampler sweeps per shot)"
+shooters = ["bayes:10", "bayes", "bayes:200"]
+batch = 200
+
+# Study 6: does going first matter? Two players race; each goes first in half the games.
+
+[[condition]]
+id = "study6-hunt-mirror"
+study = "6"
+kind = "race"
+group = "Going first"
+label = "Hunt and target vs. itself"
+shooters = ["hunt-target", "hunt-target"]
+
+[[condition]]
+id = "study6-map-mirror"
+study = "6"
+kind = "race"
+group = "Going first"
+label = "Probability map vs. itself"
+shooters = ["probability-map", "probability-map"]
+
+[[condition]]
+id = "study6-map-vs-checker"
+study = "6"
+kind = "race"
+group = "Going first"
+label = "Probability map vs. checkerboard"
+shooters = ["probability-map", "hunt-target-parity"]
+
+# Study 7: house rules. Salvo is an official variant: one shot per ship still afloat.
+
+[[condition]]
+id = "study7-salvo-map-mirror"
+study = "7"
+kind = "race"
+group = "Salvo"
+label = "Probability map vs. itself"
+shooters = ["probability-map", "probability-map"]
+rules = { salvo = true }
+
+[[condition]]
+id = "study7-salvo-map-vs-checker"
+study = "7"
+kind = "race"
+group = "Salvo"
+label = "Probability map vs. checkerboard"
+shooters = ["probability-map", "hunt-target-parity"]
+rules = { salvo = true }
+
+[[condition]]
+id = "study7-no-touch"
+study = "7"
+group = "House rules"
+label = "Ships may not touch"
+shooters = ["hunt-target", "hunt-target-parity", "probability-map", "bayes"]
+rules = { touching = false }
+
+[[condition]]
+id = "study7-hit-only"
+study = "7"
+group = "House rules"
+label = "Hit or miss only, no sinks announced"
+shooters = ["hunt-target", "hunt-target-parity", "probability-map", "bayes"]
+rules = { feedback = "hit-only" }
+batch = 100
+
+# Study 8: learning an opponent. Each series is 20 games against one opponent who always
+# hides ships the same way. Uniform is the control: there is no habit to learn.
+
+[[condition]]
+id = "study8-edges"
+study = "8"
+kind = "series"
+group = "Learning an opponent"
+label = "Hides on the edges"
+placer = "edges"
+length = 20
+shooters = ["opponent-aware", "probability-map"]
+
+[[condition]]
+id = "study8-center"
+study = "8"
+kind = "series"
+group = "Learning an opponent"
+label = "Hides in the center"
+placer = "center"
+length = 20
+shooters = ["opponent-aware", "probability-map"]
+
+[[condition]]
+id = "study8-clustered"
+study = "8"
+kind = "series"
+group = "Learning an opponent"
+label = "Clusters ships"
+placer = "clustered"
+length = 20
+shooters = ["opponent-aware", "probability-map"]
+
+[[condition]]
+id = "study8-anti-density"
+study = "8"
+kind = "series"
+group = "Learning an opponent"
+label = "Hides on low-odds squares"
+placer = "anti-density"
+length = 20
+shooters = ["opponent-aware", "probability-map"]
+
+[[condition]]
+id = "study8-uniform"
+study = "8"
+kind = "series"
+group = "Learning an opponent"
+label = "No habit (control)"
+placer = "uniform"
+length = 20
+shooters = ["opponent-aware", "probability-map"]

@@ -124,6 +124,25 @@ def check_random_repeat(rules: Rules, games: int) -> Check:
     )
 
 
+def check_first_mover(games: int) -> Check:
+    """Two random shooters racing: the first player's win rate matches the exact value."""
+    from battleship_sim.race import RaceConfig, RaceTally, run_races
+
+    rules = Rules()
+    tally = RaceTally()
+    for _, result in run_races(RaceConfig(("random", "random"), games=games,
+                                          seed="validate-race", rules=rules, workers=1)):
+        tally.add(result)
+    want = float(exact.first_player_wins_random(rules.fleet_cells, rules.cells))
+    got = tally.first_wins / tally.games
+    se = math.sqrt(want * (1 - want) / games)
+    return Check(
+        "two random shooters: first player's win rate",
+        abs(got - want) < 4 * se,
+        f"simulated {got:.4f}, exact {want:.4f} (standard error {se:.4f})",
+    )
+
+
 def placer_chi_square(
     placer: str, rules: Rules, samples: int, seed: str, support=None
 ) -> tuple[float, float]:
@@ -170,6 +189,7 @@ def run_all(
         lambda: check_placers(samples // 4),
         lambda: check_random_fire(Rules(), games),
         lambda: check_random_repeat(Rules(), games // 4),
+        lambda: check_first_mover(games),
     ]
     if full_counts:
         steps += [

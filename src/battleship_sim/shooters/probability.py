@@ -37,6 +37,8 @@ class ProbabilityMap:
             for ship in rules.fleet
             for p in placements(ship.length, rules.size)
         }
+        # Optional prior weight per position (OpponentAware sets it); None = all equal.
+        self.position_weight: dict[int, float] | None = None
 
     @property
     def targeting(self) -> bool:
@@ -62,7 +64,8 @@ class ProbabilityMap:
                 blocked |= halo(others, rules.size)
             # Hits known to be this ship's must all be covered.
             must = k.known[ship]
-            weighted: list[tuple[int, int]] = []
+            weighted: list[tuple[int, float]] = []
+            prior = self.position_weight
             for p in placements(rules.fleet[ship].length, rules.size):
                 if p & blocked or p & must != must:
                     continue
@@ -72,8 +75,12 @@ class ProbabilityMap:
                         continue
                 else:
                     weight = 1
+                if prior is not None:
+                    weight *= prior[p]
                 weighted.append((p, weight))
             total = sum(w for _, w in weighted)
+            if not total:
+                continue
             for p, w in weighted:
                 share = w / total
                 for cell in self._cells[p]:
@@ -93,3 +100,44 @@ class ProbabilityMap:
 
     def observe(self, cell: int, result: ShotResult) -> None:
         self.knowledge.record(cell, result)
+
+
+class OpponentAware(ProbabilityMap):
+    """A probability map that learns where one opponent tends to hide ships.
+
+    It plays a series of games against the same opponent (call `new_game()` between
+    games). After each game it has hit every ship square, so it knows that layout, and
+    it counts how often each square held a ship. Each position then gets a weight: the
+    product over its squares of (that square's ship rate) / (the average rate), with the
+    rates smoothed toward average by PSEUDO_GAMES imaginary games. With no history every
+    weight is 1, so its first game is an ordinary probability map.
+    """
+
+    PSEUDO_GAMES = 5
+
+    def __init__(self, rules: Rules, rng: random.Random) -> None:
+        super().__init__(rules, rng)
+        self.games_seen = 0
+        self.ship_counts = [0] * rules.cells
+
+    def new_game(self) -> None:
+        k = self.knowledge
+        if k.hits:
+            self.games_seen += 1
+            for c in cells_of(k.hits):
+                self.ship_counts[c] += 1
+        self.knowledge = Knowledge(self._rules)
+        self.position_weight = self._weights() if self.games_seen else None
+
+    def _weights(self) -> dict[int, float]:
+        rules = self._rules
+        base = rules.fleet_cells / rules.cells
+        m = self.PSEUDO_GAMES
+        rate = [(n + m * base) / (self.games_seen + m) / base for n in self.ship_counts]
+        out = {}
+        for p, cells in self._cells.items():
+            w = 1.0
+            for c in cells:
+                w *= rate[c]
+            out[p] = w
+        return out

@@ -185,6 +185,87 @@ def cmd_validate(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_race(args: argparse.Namespace) -> None:
+    from battleship_sim.race import RaceConfig, RaceTally, run_races
+
+    rules = _rules_from(args)
+    if args.salvo:
+        rules = Rules(rules.size, rules.fleet, rules.feedback, rules.touching, salvo=True)
+    config = RaceConfig(
+        shooters=(args.a, args.b),
+        placers=(args.placer_a, args.placer_b),
+        games=args.games,
+        seed=args.seed,
+        rules=rules,
+        workers=args.workers,
+    )
+    tally = RaceTally()
+    for done, (_, result) in enumerate(run_races(config), start=1):
+        tally.add(result)
+        if sys.stderr.isatty():
+            _progress(done, config.games)
+    summary = tally.summary(config.shooters)
+    print(f"\n{summary['games']:,} games{' (Salvo)' if rules.salvo else ''}, "
+          f"each player first in half; {summary['mean_turns']:.1f} turns on average\n")
+    for side, p in zip("AB", summary["players"], strict=True):
+        low, high = p["ci95"]
+        placer = config.placers["AB".index(side)]
+        print(f"  {side} {p['name']} (hides: {placer}): wins {p['win_rate']:.1%} "
+              f"({low:.1%} - {high:.1%}); going first {p['win_rate_going_first']:.1%}, "
+              f"second {p['win_rate_going_second']:.1%}")
+    low, high = summary["first_player_ci95"]
+    print(f"\nwhoever fires first wins {summary['first_player_win_rate']:.1%} "
+          f"({low:.1%} - {high:.1%})")
+    if summary["capped"]:
+        print(f"{summary['capped']:,} games hit the turn cap")
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        meta = {"config": {"shooters": list(config.shooters), "placers": list(config.placers),
+                           "games": config.games, "seed": config.seed,
+                           "rules": rules.describe()},
+                "version": __version__, "git_commit": _git_commit()}
+        out.write_text(json.dumps({**summary, **meta}, indent=2) + "\n")
+        print(f"Wrote {out}")
+
+
+def cmd_series(args: argparse.Namespace) -> None:
+    from battleship_sim.series import SeriesConfig, SeriesTally, run_series
+
+    config = SeriesConfig(
+        shooters=tuple(dict.fromkeys(args.shooters)),
+        placer=args.placer,
+        series=args.series,
+        length=args.length,
+        seed=args.seed,
+        rules=_rules_from(args),
+        workers=args.workers,
+    )
+    tally = SeriesTally(config.length)
+    for done, (_, result) in enumerate(run_series(config), start=1):
+        tally.add(result)
+        if sys.stderr.isatty():
+            _progress(done, config.series)
+    summary = tally.summary()
+    print(f"\n{summary['series']:,} opponents hiding ships with '{config.placer}', "
+          f"{config.length} games each: average shots by game number\n")
+    width = max(len(n) for n in config.shooters) + 2
+    games = sorted({0, 1, 2, 4, 9, config.length - 1} & set(range(config.length)))
+    print(f"{'game':<{width}}" + "".join(f"{g + 1:>9}" for g in games))
+    for name in config.shooters:
+        rows = summary["shooters"][name]
+        print(f"{name:<{width}}" + "".join(f"{rows[g]['mean']:>9.2f}" for g in games))
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        meta = {"config": {"shooters": list(config.shooters), "placer": config.placer,
+                           "series": config.series, "length": config.length,
+                           "seed": config.seed, "rules": config.rules.describe()},
+                "version": __version__, "git_commit": _git_commit()}
+        out.write_text(json.dumps({**summary, **meta}, indent=2) + "\n")
+        print(f"\nWrote {out}")
+
+
 def cmd_matrix(args: argparse.Namespace) -> None:
     from battleship_sim.matrix import run_matrix
 
@@ -294,6 +375,30 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--samples", type=int, default=200_000)
     p.add_argument("--quick", action="store_true", help="skip the slow 10x10 exact counts")
     p.set_defaults(func=cmd_validate)
+
+    p = sub.add_parser("race", help="two players take turns; who sinks the other first?")
+    p.add_argument("a", help="player A's shooter")
+    p.add_argument("b", help="player B's shooter")
+    p.add_argument("--placer-a", default="uniform", help="how player A hides its fleet")
+    p.add_argument("--placer-b", default="uniform", help="how player B hides its fleet")
+    p.add_argument("-n", "--games", type=int, default=10_000)
+    p.add_argument("--seed", default="0")
+    p.add_argument("--workers", type=int, default=0)
+    p.add_argument("--salvo", action="store_true", help="one shot per ship afloat each turn")
+    p.add_argument("--out", help="write the summary as JSON")
+    _add_rule_args(p)
+    p.set_defaults(func=cmd_race)
+
+    p = sub.add_parser("series", help="many games against one opponent: does learning help?")
+    p.add_argument("shooters", nargs="+", help="e.g. opponent-aware probability-map")
+    p.add_argument("--placer", default="edges", help="the opponent's hiding style")
+    p.add_argument("--series", type=int, default=1_000, help="how many opponents")
+    p.add_argument("--length", type=int, default=20, help="games against each opponent")
+    p.add_argument("--seed", default="0")
+    p.add_argument("--workers", type=int, default=0)
+    p.add_argument("--out", help="write the summary as JSON")
+    _add_rule_args(p)
+    p.set_defaults(func=cmd_series)
 
     p = sub.add_parser("matrix", help="every shooter against every placer, and the equilibrium")
     p.add_argument("--shooters", required=True, help="comma-separated")

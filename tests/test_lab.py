@@ -6,6 +6,7 @@ import pytest
 
 from battleship_sim.cli import main
 from battleship_sim.lab import fingerprint, hist_quantile, load_config, run_lab
+from battleship_sim.rules import Rules
 from battleship_sim.stats import quantile
 
 CONFIG = """
@@ -145,3 +146,66 @@ def test_upload_reports_rsync_errors(tmp_path):
     upload(snap, str(tmp_path / "out.json"), logs.append)
     assert (tmp_path / "out.json").read_text() == "{}"
     assert len(logs) == 1
+
+
+KINDS = """
+seed = "k"
+batch_games = 30
+
+[[condition]]
+id = "solo"
+shooters = ["hunt-target"]
+
+[[condition]]
+id = "duel"
+kind = "race"
+group = "Going first"
+shooters = ["hunt-target", "hunt-target"]
+rules = { salvo = true }
+
+[[condition]]
+id = "learn"
+kind = "series"
+group = "Learning"
+placer = "edges"
+length = 5
+batch = 3
+shooters = ["opponent-aware", "probability-map"]
+"""
+
+
+def test_race_and_series_conditions_match_offline_runs(tmp_path):
+    config = tmp_path / "live.toml"
+    config.write_text(KINDS)
+    run_lab(config, tmp_path / "state", tmp_path / "pub.json", workers=2, publish_every=0,
+            max_batches=2, log=lambda _: None)
+    snap = json.loads((tmp_path / "pub.json").read_text())
+    duel, learn = snap["conditions"][1], snap["conditions"][2]
+    assert duel["kind"] == "race" and duel["games"] == 60
+    assert "--salvo" in duel["reproduce"]
+    assert learn["kind"] == "series" and learn["games"] == 30  # 6 series x 5 games
+
+    out = tmp_path / "race.json"
+    main([*shlex.split(duel["reproduce"])[1:], "--workers", "1", "--out", str(out)])
+    offline = json.loads(out.read_text())
+    for key in ("games", "first_player_win_rate", "mean_turns", "players"):
+        assert duel["race"][key] == offline[key], key
+
+    out = tmp_path / "series.json"
+    main([*shlex.split(learn["reproduce"])[1:], "--workers", "1", "--out", str(out)])
+    offline = json.loads(out.read_text())
+    assert learn["series"]["shooters"] == offline["shooters"]
+    assert learn["series"]["series"] == offline["series"] == 6
+
+
+def test_old_solve_fingerprints_unchanged_by_new_fields(tmp_path):
+    """Phase 4 added kinds and Salvo; solve conditions must hash exactly as before."""
+    config = tmp_path / "live.toml"
+    config.write_text(CONFIG)
+    cond = load_config(config).conditions[0]
+    assert cond.definition() == {
+        "shooters": ["random", "hunt-target"],
+        "placer": "uniform",
+        "rules": Rules().describe(),
+    }
+    assert "salvo" not in Rules().describe() and "kind" not in cond.definition()
