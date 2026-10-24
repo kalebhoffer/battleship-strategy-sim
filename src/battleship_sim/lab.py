@@ -47,6 +47,7 @@ class Condition:
     id: str
     label: str
     study: str
+    group: str  # conditions sharing a group are shown together as a shooter x placer table
     shooters: tuple[str, ...]
     placer: str
     rules: Rules
@@ -86,6 +87,7 @@ def load_config(path: Path) -> LabConfig:
             id=c["id"],
             label=c.get("label", c["id"]),
             study=str(c.get("study", "")),
+            group=c.get("group", ""),
             shooters=tuple(dict.fromkeys(c["shooters"])),
             placer=c.get("placer", "uniform"),
             rules=_rules(c.get("rules", {})),
@@ -264,6 +266,7 @@ def snapshot(config: LabConfig, state: dict, commit: str | None) -> dict:
                 "id": cond.id,
                 "label": cond.label,
                 "study": cond.study,
+                "group": cond.group,
                 "placer": cond.placer,
                 "rules": cond.rules.describe(),
                 "seed": cond.seed(config.seed),

@@ -81,7 +81,7 @@ The probability-map and Bayesian shooters must use exactly the information the r
 | Clustered | Puts ships next to each other | Does touching confuse hunt-and-target follow-ups? |
 | Spread out | Keeps maximum distance between ships | Does spreading out slow the hunt phase? |
 | Anti-density | Favors cells that a probability-map shooter will fire at last | Can a placer exploit a known strong shooter? |
-| Adversarial | Searches for layouts that make a specific shooter take the most shots | What is the worst case for each shooter? |
+| Adversarial | Searches for layouts that make a specific shooter take the most shots (`battleship-sim worst-case`) | What is the worst case for each shooter? |
 | Mixed / equilibrium | Randomizes over placement styles in proportions that come out of the game-theory study | What does a placement look like if it can't be exploited? |
 
 ---

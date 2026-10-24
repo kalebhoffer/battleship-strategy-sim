@@ -4,6 +4,7 @@
 #
 # Changing a condition's shooters, placer, or rules changes its fingerprint, which
 # archives its totals and restarts it. Add a new id rather than editing a running one.
+# Labels are display text only and can change freely.
 
 seed = "2026"
 batch_games = 500
@@ -17,7 +18,7 @@ shooters = ["random-repeat", "random"]
 [[condition]]
 id = "study2-search"
 study = "2"
-label = "Hunt, target, and search patterns"
+label = "Search patterns"
 shooters = [
   "random",
   "hunt-target",
@@ -32,12 +33,71 @@ shooters = [
 [[condition]]
 id = "study3-official"
 study = "3"
-label = "Probability map, official rules"
+label = "Probability map"
 shooters = ["hunt-target", "hunt-target-parity", "adaptive-parity", "probability-map"]
 
 [[condition]]
 id = "study3-sink-only"
 study = "3"
-label = "Probability map, sink-only rule"
+label = "Probability map (sink-only)"
 shooters = ["hunt-target", "hunt-target-parity", "adaptive-parity", "probability-map"]
 rules = { feedback = "sink-only" }
+
+# Study 4: where to hide your ships. The same four shooters against each placement style.
+# Shown together on the site as one table (group).
+
+[[condition]]
+id = "study4-uniform"
+study = "4"
+group = "Hiding ships"
+label = "Random"
+placer = "uniform"
+shooters = ["random", "hunt-target", "hunt-target-parity", "probability-map"]
+
+[[condition]]
+id = "study4-naive"
+study = "4"
+group = "Hiding ships"
+label = "One ship at a time"
+placer = "naive"
+shooters = ["random", "hunt-target", "hunt-target-parity", "probability-map"]
+
+[[condition]]
+id = "study4-edges"
+study = "4"
+group = "Hiding ships"
+label = "Edges"
+placer = "edges"
+shooters = ["random", "hunt-target", "hunt-target-parity", "probability-map"]
+
+[[condition]]
+id = "study4-center"
+study = "4"
+group = "Hiding ships"
+label = "Center"
+placer = "center"
+shooters = ["random", "hunt-target", "hunt-target-parity", "probability-map"]
+
+[[condition]]
+id = "study4-clustered"
+study = "4"
+group = "Hiding ships"
+label = "Clustered"
+placer = "clustered"
+shooters = ["random", "hunt-target", "hunt-target-parity", "probability-map"]
+
+[[condition]]
+id = "study4-spread"
+study = "4"
+group = "Hiding ships"
+label = "Spread out"
+placer = "spread"
+shooters = ["random", "hunt-target", "hunt-target-parity", "probability-map"]
+
+[[condition]]
+id = "study4-anti-density"
+study = "4"
+group = "Hiding ships"
+label = "Low-odds squares"
+placer = "anti-density"
+shooters = ["random", "hunt-target", "hunt-target-parity", "probability-map"]

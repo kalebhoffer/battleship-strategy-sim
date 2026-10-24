@@ -151,10 +151,10 @@ def cmd_summarize(args: argparse.Namespace) -> None:
 def cmd_list(_: argparse.Namespace) -> None:
     print("shooters")
     for spec in SHOOTERS.values():
-        print(f"  {spec.name:<16}{spec.description}")
+        print(f"  {spec.name:<20}{spec.description}")
     print("\nplacers")
     for spec in PLACERS.values():
-        print(f"  {spec.name:<16}{spec.description}")
+        print(f"  {spec.name:<20}{spec.description}")
 
 
 def cmd_count(args: argparse.Namespace) -> None:
@@ -183,6 +183,56 @@ def cmd_validate(args: argparse.Namespace) -> None:
     print("\nall checks passed" if not failures else f"\n{failures} check(s) failed")
     if failures:
         sys.exit(1)
+
+
+def cmd_matrix(args: argparse.Namespace) -> None:
+    from battleship_sim.matrix import run_matrix
+
+    shooters = [s.strip() for s in args.shooters.split(",")]
+    placers = [p.strip() for p in args.placers.split(",")]
+    result = run_matrix(shooters, placers, args.games, args.seed, _rules_from(args), args.workers)
+    width = max(len(s) for s in shooters) + 2
+    col = max(12, *(len(p) + 2 for p in placers))
+    print(f"\naverage shots to sink the fleet ({args.games:,} games per cell; "
+          f"the placer wants more, the shooter fewer)\n")
+    print(f"{'':<{width}}" + "".join(f"{p:>{col}}" for p in placers))
+    for s in shooters:
+        print(f"{s:<{width}}" + "".join(f"{result['cells'][s][p]['mean']:>{col}.2f}"
+                                         for p in placers))
+    eq = result["equilibrium"]
+    low, high = eq["value_bounds"]
+    print(f"\nequilibrium (zero-sum, approximate): value between {low:.2f} and {high:.2f} shots")
+    print("  placer mix:  " + ", ".join(f"{k} {v:.1%}" for k, v in eq["placer_mix"].items()
+                                       if v >= 0.005))
+    print("  shooter mix: " + ", ".join(f"{k} {v:.1%}" for k, v in eq["shooter_mix"].items()
+                                       if v >= 0.005))
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        meta = {"version": __version__, "git_commit": _git_commit()}
+        out.write_text(json.dumps({**result, **meta}, indent=2) + "\n")
+        print(f"\nWrote {out}")
+    print("\nThe matrix uses sampled averages, so the equilibrium is only as precise as they are.")
+
+
+def cmd_worst_case(args: argparse.Namespace) -> None:
+    from battleship_sim.matrix import worst_case
+
+    rules = _rules_from(args)
+    result = worst_case(args.shooter, rules, args.steps, args.games, args.seed,
+                        log=lambda m: print(m, file=sys.stderr, flush=True))
+    print(render(tuple(result["layout"]), rules))
+    c = result["check"]
+    low, high = c["ci95"]
+    print(f"\n{args.shooter}: {result['start_mean']:.2f} shots on the starting layout, "
+          f"{result['search_mean']:.2f} on this one during the search;")
+    print(f"re-checked on {c['games']} fresh games: {c['mean']:.2f} ({low:.2f} - {high:.2f}), "
+          f"worst {c['max']}")
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps({**result, "version": __version__,
+                                   "git_commit": _git_commit()}, indent=2) + "\n")
 
 
 def cmd_lab(args: argparse.Namespace) -> None:
@@ -244,6 +294,25 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--samples", type=int, default=200_000)
     p.add_argument("--quick", action="store_true", help="skip the slow 10x10 exact counts")
     p.set_defaults(func=cmd_validate)
+
+    p = sub.add_parser("matrix", help="every shooter against every placer, and the equilibrium")
+    p.add_argument("--shooters", required=True, help="comma-separated")
+    p.add_argument("--placers", required=True, help="comma-separated")
+    p.add_argument("-n", "--games", type=int, default=10_000, help="games per placer")
+    p.add_argument("--seed", default="0")
+    p.add_argument("--workers", type=int, default=0)
+    p.add_argument("--out", help="write the matrix and equilibrium as JSON")
+    _add_rule_args(p)
+    p.set_defaults(func=cmd_matrix)
+
+    p = sub.add_parser("worst-case", help="search for a layout that is hard for one shooter")
+    p.add_argument("shooter")
+    p.add_argument("--steps", type=int, default=300)
+    p.add_argument("--games", type=int, default=50, help="shooter seeds per evaluation")
+    p.add_argument("--seed", default="worst")
+    p.add_argument("--out", help="write the result as JSON")
+    _add_rule_args(p)
+    p.set_defaults(func=cmd_worst_case)
 
     p = sub.add_parser("lab", help="run experiments continuously and publish live stats")
     p.add_argument("--config", default="experiments/live.toml")

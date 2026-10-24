@@ -124,9 +124,12 @@ def check_random_repeat(rules: Rules, games: int) -> Check:
     )
 
 
-def placer_chi_square(placer: str, rules: Rules, samples: int, seed: str) -> tuple[float, float]:
-    """Chi-square test of a placer against 'every legal layout equally likely'."""
-    layouts = enumerate_layouts(rules)
+def placer_chi_square(
+    placer: str, rules: Rules, samples: int, seed: str, support=None
+) -> tuple[float, float]:
+    """Chi-square test of a placer against 'every legal layout equally likely', or every
+    layout that passes `support` for placers restricted to a subset."""
+    layouts = [x for x in enumerate_layouts(rules) if support is None or support(x)]
     index = {layout: i for i, layout in enumerate(layouts)}
     place = get_placer(placer)
     rng = random.Random(seed)

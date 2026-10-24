@@ -9,8 +9,8 @@ It's the code behind the
 [Battleship experiment](https://kalebhoffer.com/experiments/battleship-strategy) on
 kalebhoffer.com. The full research plan is in [docs/research-plan.md](docs/research-plan.md).
 
-> **Status: Phases 1 and 2 (engine, validation, and the shooters for Studies 1-3).**
-> No findings have been published.
+> **Status: Phases 1-3 (engine, validation, shooters, placement styles, and the
+> shooter-placer game) plus a live lab.** No findings have been published.
 
 ## Quick start
 
@@ -52,6 +52,35 @@ Each run writes a folder under `results/`:
 
 Shooters with a hunt mode and a target mode also report hit rates for each mode.
 Strategy code is in [`shooters/`](src/battleship_sim/shooters).
+
+## Placers
+
+| Name | How the fleet is hidden |
+| --- | --- |
+| `uniform` | Every legal layout equally likely. The neutral baseline. |
+| `naive` | One ship at a time, each at a random spot that still fits. Not uniform. |
+| `edges` | Every ship touches the outer edge. Uniform among such layouts. |
+| `center` | Every ship inside the middle 6x6. Uniform among such layouts. Impossible without touching (there are 0 such layouts). |
+| `clustered` | One group, each ship touching another side to side. |
+| `spread` | The most spread out of 50 random layouts. |
+| `anti-density` | Each ship in the quarter of its positions the probability map rates least likely before the first shot. |
+| `mix:edges=0.3,uniform=0.7` | A random style each game, with those weights |
+
+## The shooter-placer game
+
+```bash
+# Study 4/5: every shooter against every placer, plus the equilibrium of the zero-sum game
+uv run battleship-sim matrix --shooters random,hunt-target,hunt-target-parity,probability-map \
+  --placers uniform,naive,edges,center,clustered,spread,anti-density -n 100000 --seed study4 \
+  --out results/matrix.json
+
+# A layout that is hard for one shooter (hill-climbing search, re-checked on fresh games)
+uv run battleship-sim worst-case probability-map --steps 500 --games 100
+```
+
+The equilibrium solver reports the mixes and a lower and upper bound on the game's value,
+so you can see how close the approximation is. The `mix:` placer can then play the
+equilibrium mix.
 
 ## Studies 1-3
 
