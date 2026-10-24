@@ -125,7 +125,7 @@ group = "Whole-fleet reasoning"
 label = "Sink-only rule"
 shooters = ["probability-map", "bayes", "info-gain"]
 rules = { feedback = "sink-only" }
-batch = 100
+batch = 50
 
 [[condition]]
 id = "study3-bayes-sweeps"
@@ -133,7 +133,7 @@ study = "3"
 group = "Whole-fleet reasoning"
 label = "Does sampling more help? (sampler sweeps per shot)"
 shooters = ["bayes:10", "bayes", "bayes:200"]
-batch = 200
+batch = 100
 
 # Study 6: does going first matter? Two players race; each goes first in half the games.
 
@@ -196,7 +196,7 @@ group = "House rules"
 label = "Hit or miss only, no sinks announced"
 shooters = ["hunt-target", "hunt-target-parity", "probability-map", "bayes"]
 rules = { feedback = "hit-only" }
-batch = 100
+batch = 50
 
 # Study 8: learning an opponent. Each series is 20 games against one opponent who always
 # hides ships the same way. Uniform is the control: there is no habit to learn.

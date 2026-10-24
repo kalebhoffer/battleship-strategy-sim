@@ -146,18 +146,21 @@ def fingerprint(cond: Condition) -> str:
     """Hash of the condition's definition and the outcome of fixed canary games."""
     h = hashlib.sha256(json.dumps(cond.definition(), sort_keys=True).encode())
     seed = f"canary/{cond.id}"
+    # Slow conditions set a small batch; their canary is no bigger than one batch.
+    games = min(CANARY_GAMES, cond.batch) if cond.batch else CANARY_GAMES
     if cond.kind == "race":
-        races = race_chunk(_race_config(cond, seed), 0, CANARY_GAMES)
+        races = race_chunk(_race_config(cond, seed), 0, games)
         for _, r in races:
             h.update(f"{r.winner}:{r.turns}:{r.shots}:{r.afloat};".encode())
         return h.hexdigest()[:16]
     if cond.kind == "series":
-        for _, result in series_chunk(_series_config(cond, seed), 0, CANARY_SERIES):
+        count = min(CANARY_SERIES, cond.batch) if cond.batch else CANARY_SERIES
+        for _, result in series_chunk(_series_config(cond, seed), 0, count):
             h.update(json.dumps(result, sort_keys=True).encode())
         return h.hexdigest()[:16]
-    sim = SimConfig(cond.shooters, cond.placer, CANARY_GAMES, seed, cond.rules)
-    games, _ = _play_chunk(sim, 0, CANARY_GAMES)
-    for _, results in games:
+    sim = SimConfig(cond.shooters, cond.placer, games, seed, cond.rules)
+    played, _ = _play_chunk(sim, 0, games)
+    for _, results in played:
         for name, r in results:
             h.update(f"{name}:{r.shots}:{r.first_hit}:{r.sunk_at}:{r.repeats};".encode())
     return h.hexdigest()[:16]
@@ -415,10 +418,14 @@ def load_state(state_path: Path) -> dict:
     return {"started_at": _now(), "conditions": {}, "retired": {}}
 
 
-def sync_fingerprints(config: LabConfig, state: dict, log=print) -> None:
+def sync_fingerprints(config: LabConfig, state: dict, log=print, pool: Executor | None = None
+                      ) -> None:
     """Retire any condition whose behavior changed; start missing ones from zero."""
-    for cond in config.conditions:
-        fp = fingerprint(cond)
+    if pool is None:
+        prints = [fingerprint(c) for c in config.conditions]
+    else:
+        prints = list(pool.map(fingerprint, config.conditions))
+    for cond, fp in zip(config.conditions, prints, strict=True):
         cs = state["conditions"].get(cond.id)
         if cs and cs["fingerprint"] != fp:
             stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -477,7 +484,6 @@ def run_lab(
     config = load_config(config_path)
     state_path = state_dir / "state.json"
     state = load_state(state_path)
-    sync_fingerprints(config, state, log)
     stop = False
 
     def _stop(*_):
@@ -496,6 +502,7 @@ def run_lab(
     last_publish = 0.0
     batches = 0
     with ProcessPoolExecutor(max_workers=workers) as pool:
+        sync_fingerprints(config, state, log, pool)
         while not stop and (max_batches is None or batches < max_batches):
             for cond in config.conditions:
                 cs = state["conditions"][cond.id]
