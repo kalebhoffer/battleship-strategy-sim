@@ -12,6 +12,12 @@ conditions the change didn't touch keep counting. A change that affects only rar
 can miss the canaries, so after changing shooter code, replay a condition's first games
 under the old and new code (`battleship-sim run` with its seed) and compare. If any game
 differs, bump the condition's `revision` in live.toml to restart it.
+
+A condition stops once it reaches its target (the research plan's stopping rule): a 95%
+interval on every shooter's mean shot count (for a series, at every game number) narrower
+than `target_ci`, or `target_games` games. Its workers then go to the conditions still
+running. Targets are checked against the saved totals, so raising one in live.toml
+resumes the condition where it stopped.
 """
 
 from __future__ import annotations
@@ -48,6 +54,7 @@ REPOSITORY = "https://github.com/kalebhoffer/battleship-strategy-sim"
 CANARY_GAMES = 300
 CANARY_SERIES = 10
 MAX_BATCH = 50_000
+MIN_TARGET_GAMES = 100  # never call an interval "narrow enough" on fewer games than this
 CDF_SHOTS = 100  # the published distribution covers 0..100 shots
 
 
@@ -70,6 +77,9 @@ class Condition:
     revision: int = 0
     # "slow" conditions run in their own lane with their own workers (scheduling only).
     lane: str = "fast"
+    # When to stop (see the module docstring). Neither is part of the fingerprint.
+    target_games: int | None = None
+    target_ci: float | None = None  # overrides the lab's target_ci
 
     def seed(self, base: str) -> str:
         return f"{base}/{self.id}"
@@ -96,6 +106,8 @@ class LabConfig:
     batch_games: int  # first batch per condition; later batches are sized by time
     conditions: tuple[Condition, ...]
     batch_seconds: float = 3.0  # target wall time per batch; 0 = fixed-size batches
+    target_ci: float | None = None  # solve conditions stop once every interval is this narrow
+    race_games: int | None = None  # race conditions stop at this many games
 
 
 def _rules(raw: dict) -> Rules:
@@ -134,6 +146,8 @@ def load_config(path: Path) -> LabConfig:
             batch=c.get("batch"),
             revision=int(c.get("revision", 0)),
             lane=c.get("lane", "fast"),
+            target_games=c.get("target_games"),
+            target_ci=c.get("target_ci"),
         )
         if cond.lane not in ("fast", "slow"):
             raise ValueError(f"{cond.id}: lane must be fast or slow")
@@ -147,7 +161,7 @@ def load_config(path: Path) -> LabConfig:
         raise ValueError("condition ids must be unique")
     return LabConfig(
         str(raw.get("seed", "0")), int(raw.get("batch_games", 1000)), tuple(conditions),
-        float(raw.get("batch_seconds", 3.0)),
+        float(raw.get("batch_seconds", 3.0)), raw.get("target_ci"), raw.get("race_games"),
     )
 
 
@@ -288,6 +302,46 @@ def _cdf(hist: dict[str, int], n: int) -> list[float]:
     return out
 
 
+def target_of(config: LabConfig, cond: Condition) -> dict:
+    """The condition's stopping target: {"games": n} and/or {"ci95_width": w}."""
+    target: dict = {}
+    games = cond.target_games or (config.race_games if cond.kind == "race" else None)
+    if games:
+        target["games"] = games
+    # A condition's own target_games replaces the lab-wide interval target.
+    ci = cond.target_ci if cond.target_ci is not None or cond.target_games else config.target_ci
+    if cond.kind != "race" and ci:
+        target["ci95_width"] = ci
+    return target
+
+
+def widest_interval(cs: dict) -> float | None:
+    """Width of the widest 95% interval on a mean shot count: across the shooters of a
+    solve condition, or across every shooter and game number of a series condition."""
+    if "series" in cs:
+        n = cs["series"]["series"]
+        cells = [(n, total, sumsq) for rows in cs["series"]["sums"].values()
+                 for total, sumsq in rows]
+    else:
+        cells = [(s["n"], s["sum"], s["sumsq"]) for s in cs["shooters"].values()]
+    if not cells or min(c[0] for c in cells) < MIN_TARGET_GAMES:
+        return None
+    return max(high - low for _, _, low, high in (_moments(*c) for c in cells))
+
+
+def reached_target(config: LabConfig, cond: Condition, cs: dict | None) -> bool:
+    """Whether the condition has met either of its targets (none set: never)."""
+    if not cs:
+        return False
+    target = target_of(config, cond)
+    if "games" in target and cs["games"] >= target["games"]:
+        return True
+    if "ci95_width" in target:
+        width = widest_interval(cs)
+        return width is not None and width < target["ci95_width"]
+    return False
+
+
 def snapshot(config: LabConfig, state: dict, commit: str | None) -> dict:
     """The public JSON: computed statistics, plus everything needed to reproduce them."""
     conditions = []
@@ -357,6 +411,8 @@ def snapshot(config: LabConfig, state: dict, commit: str | None) -> dict:
                 "seed": cond.seed(config.seed),
                 "fingerprint": cs["fingerprint"] if cs else None,
                 "games": cs["games"] if cs else 0,
+                "target": target_of(config, cond),
+                "done": reached_target(config, cond, cs),
                 "shooters": shooters,
                 "paired": pairs,
                 "reproduce": reproduce_command(cond, config.seed, cs["games"] if cs else 0),
@@ -491,12 +547,14 @@ def run_lab(
     log=print,
     slow_workers: int | None = None,
 ) -> dict:
-    """Play every condition forever, in two lanes that run side by side.
+    """Play every condition until it reaches its target, in two lanes side by side.
 
     Conditions marked `lane = "slow"` (the Bayesian shooters under the harder rules) get
-    their own pool of `slow_workers`, and the rest share the other workers, so the fast
-    conditions never wait for a slow batch. Within a lane, conditions take turns, one
-    batch at a time, so each condition's games stay numbered 0, 1, 2, ... with no gaps.
+    `slow_workers` of the workers and the rest share the others, so the fast conditions
+    never wait for a slow batch. Within a lane, conditions take turns, one batch at a
+    time, so each condition's games stay numbered 0, 1, 2, ... with no gaps. A condition
+    that reaches its target drops out, and once a whole lane is done the other lane gets
+    every worker. When everything is done the lab idles until it is stopped.
     """
     config = load_config(config_path)
     state_path = state_dir / "state.json"
@@ -512,17 +570,24 @@ def run_lab(
         signal.signal(sig, _stop)
 
     lanes = {
-        "fast": [c for c in config.conditions if c.lane != "slow"],
-        "slow": [c for c in config.conditions if c.lane == "slow"],
+        k: [c for c in config.conditions if (c.lane == "slow") == (k == "slow")]
+        for k in ("fast", "slow")
     }
-    if not lanes["slow"]:
-        sizes = {"fast": workers, "slow": 0}
-    elif not lanes["fast"]:
-        sizes = {"fast": 0, "slow": workers}
-    else:
+    lanes = {k: v for k, v in lanes.items() if v}
+    if len(lanes) == 2:
         slow = slow_workers if slow_workers is not None else max(1, workers // 4)
         slow = min(max(1, slow), max(1, workers - 1))
         sizes = {"fast": max(1, workers - slow), "slow": slow}
+    else:
+        sizes = dict.fromkeys(lanes, workers)
+    running = dict.fromkeys(lanes, True)
+    finished: set[str] = set()
+
+    def share(lane: str) -> int:
+        """Workers this lane may use now: all of them once the other lane is done."""
+        with lock:
+            alone = sum(running.values()) < 2
+        return workers if alone else sizes[lane]
 
     def publish() -> None:
         with lock:
@@ -534,16 +599,37 @@ def run_lab(
             upload(publish_path, upload_to, log)
         log(f"lab: {total:,} games published")
 
-    def run_lane(conditions: list[Condition], pool: Executor, n: int) -> None:
-        batches = 0
-        while not stop.is_set() and (max_batches is None or batches < max_batches):
-            for cond in conditions:
-                if stop.is_set():
-                    break
-                play_batch(cond, pool, n)
-            batches += 1
+    def still_running(conditions: list[Condition]) -> list[Condition]:
+        out = []
+        for cond in conditions:
+            with lock:
+                done = reached_target(config, cond, state["conditions"][cond.id])
+            if not done:
+                out.append(cond)
+            elif cond.id not in finished:
+                finished.add(cond.id)
+                games = state["conditions"][cond.id]["games"]
+                log(f"lab: {cond.id} reached its target at {games:,} games; stopping it")
+        return out
 
-    def play_batch(cond: Condition, pool: Executor, n: int) -> None:
+    def run_lane(lane: str) -> None:
+        rounds = 0
+        try:
+            while not stop.is_set() and (max_batches is None or rounds < max_batches):
+                todo = still_running(lanes[lane])
+                if not todo:
+                    log(f"lab: every {lane} condition reached its target")
+                    break
+                for cond in todo:
+                    if stop.is_set():
+                        break
+                    play_batch(cond, share(lane))
+                rounds += 1
+        finally:
+            with lock:
+                running[lane] = False
+
+    def play_batch(cond: Condition, n: int) -> None:
         # Only this lane touches this condition, so reading its start is safe unlocked.
         cs = state["conditions"][cond.id]
         if cond.kind == "race":
@@ -553,12 +639,12 @@ def run_lab(
         else:
             start = cs["games"]
         # Size each batch to take about batch_seconds, from this condition's recent pace,
-        # so cheap conditions play many games per turn and expensive ones few. Batch size
-        # never affects results: games are numbered and always played in order.
+        # so cheap conditions play many games per turn and expensive ones few, rounded up
+        # to a multiple of the workers so none sits idle. Batch size never affects
+        # results: games are numbered and always played in order.
         if cond.id in pace and config.batch_seconds > 0:
             count = max(1, min(MAX_BATCH, round(pace[cond.id] * config.batch_seconds)))
-            if cond.kind != "series":
-                count = max(n, count)
+            count = math.ceil(count / n) * n
         else:
             count = first_batch(config, cond)
         began = time.monotonic()
@@ -585,16 +671,15 @@ def run_lab(
                 for _, results in played:
                     add_game(cs, results)
 
-    lane_text = ", ".join(f"{len(lanes[k])} {k} on {sizes[k]}" for k in lanes if lanes[k])
+    lane_text = ", ".join(f"{len(lanes[k])} {k} on {sizes[k]}" for k in lanes)
     log(f"lab: {len(config.conditions)} conditions ({lane_text} workers), commit {commit}")
-    pools = {k: ProcessPoolExecutor(max_workers=sizes[k]) for k in lanes if lanes[k]}
+    # One pool for both lanes: each lane splits its batches into as many chunks as it
+    # has workers, so together they never ask for more than the pool holds.
+    pool = ProcessPoolExecutor(max_workers=workers)
     try:
-        sync_fingerprints(config, state, log, pools.get("fast") or pools["slow"])
-        threads = [
-            threading.Thread(target=run_lane, args=(lanes[k], pools[k], sizes[k]),
-                             name=f"lab-{k}", daemon=True)
-            for k in pools
-        ]
+        sync_fingerprints(config, state, log, pool)
+        threads = [threading.Thread(target=run_lane, args=(k,), name=f"lab-{k}", daemon=True)
+                   for k in lanes]
         for t in threads:
             t.start()
         last_publish = time.monotonic()
@@ -605,9 +690,12 @@ def run_lab(
                 publish()
                 last_publish = time.monotonic()
     finally:
-        for pool in pools.values():
-            pool.shutdown(cancel_futures=True)
+        pool.shutdown(cancel_futures=True)
     publish()
+    if max_batches is None and not stop.is_set():
+        # Exiting would only make launchd start the lab again; wait to be stopped.
+        log("lab: all conditions reached their targets; idling")
+        stop.wait()
     return state
 
 

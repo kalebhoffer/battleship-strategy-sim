@@ -1,5 +1,8 @@
 import json
+import os
 import shlex
+import signal
+import threading
 from pathlib import Path
 
 import pytest
@@ -279,3 +282,122 @@ def test_batches_grow_to_fill_the_time_budget(tmp_path):
     offline = json.loads((out / "summary.json").read_text())
     for s in cond["shooters"]:
         assert s["mean"] == pytest.approx(offline["shooters"][s["name"]]["mean"])
+
+
+TARGETS = """
+seed = "g"
+batch_games = 40
+batch_seconds = 0  # fixed batches, so counts are exact
+target_ci = 4.0
+race_games = 120
+
+[[condition]]
+id = "counted"
+shooters = ["random"]
+target_games = 80
+
+[[condition]]
+id = "narrowed"
+shooters = ["hunt-target"]
+
+[[condition]]
+id = "duel"
+kind = "race"
+shooters = ["hunt-target", "random"]
+
+[[condition]]
+id = "careful"
+shooters = ["probability-map"]
+rules = { feedback = "sink-only" }
+batch = 10
+lane = "slow"
+target_ci = 0.01
+"""
+
+
+def test_conditions_stop_at_their_targets(tmp_path):
+    config = tmp_path / "live.toml"
+    config.write_text(TARGETS)
+    logs = []
+    state = run_lab(config, tmp_path / "state", tmp_path / "pub.json", workers=3,
+                    publish_every=0, max_batches=30, log=logs.append)
+    games = {k: v["games"] for k, v in state["conditions"].items()}
+    assert games["counted"] == 80 and games["duel"] == 120
+    assert any("every fast condition reached its target" in line for line in logs)
+    # The slow lane kept going after the fast lane finished, with all the workers.
+    assert games["careful"] == 300
+    snap = {c["id"]: c for c in json.loads((tmp_path / "pub.json").read_text())["conditions"]}
+    narrowed = snap["narrowed"]
+    (s,) = narrowed["shooters"]
+    assert s["ci95"][1] - s["ci95"][0] < 4.0
+    assert narrowed["target"] == {"ci95_width": 4.0} and narrowed["done"]
+    assert narrowed["games"] < 30 * 40  # it stopped early
+    assert snap["counted"]["target"] == {"games": 80}
+    assert snap["careful"]["target"] == {"ci95_width": 0.01} and not snap["careful"]["done"]
+    # Handing workers over mid-run changes how batches are split, never the games.
+    out = tmp_path / "replay"
+    main([*shlex.split(snap["careful"]["reproduce"])[1:], "--workers", "1", "--out", str(out)])
+    offline = json.loads((out / "summary.json").read_text())
+    (s,) = snap["careful"]["shooters"]
+    assert s["mean"] == pytest.approx(offline["shooters"]["probability-map"]["mean"])
+    assert s["ci95"] == pytest.approx(offline["shooters"]["probability-map"]["ci95"])
+
+
+def test_targets_are_not_part_of_the_fingerprint(tmp_path):
+    config = tmp_path / "live.toml"
+    config.write_text(TARGETS)
+    counted = load_config(config).conditions[0]
+    assert counted.target_games == 80
+    assert counted.definition() == {"shooters": ["random"], "placer": "uniform",
+                                    "rules": Rules().describe()}
+
+
+def test_raising_a_target_resumes_where_it_stopped(tmp_path):
+    config = tmp_path / "live.toml"
+    config.write_text(TARGETS)
+    run_lab(config, tmp_path / "state", tmp_path / "pub.json", workers=1, publish_every=0,
+            max_batches=3, log=lambda _: None)
+    config.write_text(TARGETS.replace("target_games = 80", "target_games = 160"))
+    state = run_lab(config, tmp_path / "state", tmp_path / "pub.json", workers=1,
+                    publish_every=0, max_batches=3, log=lambda _: None)
+    assert state["conditions"]["counted"]["games"] == 160
+
+
+def test_lab_idles_once_everything_is_done(tmp_path):
+    config = tmp_path / "live.toml"
+    config.write_text(TARGETS.split("[[condition]]\nid = \"narrowed\"")[0])
+    logs = []
+
+    def log(line):
+        logs.append(line)
+        if "idling" in line:
+            threading.Timer(0.2, os.kill, (os.getpid(), signal.SIGINT)).start()
+
+    state = run_lab(config, tmp_path / "state", tmp_path / "pub.json", workers=1,
+                    publish_every=0, log=log)
+    assert state["conditions"]["counted"]["games"] == 80
+    assert any("idling" in line for line in logs)
+
+
+def test_series_stop_when_every_game_number_is_narrow(tmp_path):
+    config = tmp_path / "live.toml"
+    config.write_text("""
+seed = "s"
+batch_games = 400
+batch_seconds = 0
+target_ci = 6.0
+
+[[condition]]
+id = "learn"
+kind = "series"
+shooters = ["hunt-target"]
+placer = "edges"
+length = 3
+""")
+    state = run_lab(config, tmp_path / "state", tmp_path / "pub.json", workers=1,
+                    publish_every=0, max_batches=40, log=lambda _: None)
+    snap = json.loads((tmp_path / "pub.json").read_text())["conditions"][0]
+    assert snap["done"] and snap["target"] == {"ci95_width": 6.0}
+    by_game = snap["series"]["shooters"]["hunt-target"]
+    assert max(g["ci95"][1] - g["ci95"][0] for g in by_game) < 6.0
+    assert state["conditions"]["learn"]["series"]["series"] < 40 * (400 // 3)

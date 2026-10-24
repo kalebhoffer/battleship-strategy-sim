@@ -15,12 +15,21 @@ seed = "2026"
 # batch is sized to take about batch_seconds, so every condition gets a fair share of time.
 batch_games = 500
 batch_seconds = 3
+# When to stop (research plan, section 6). A solve condition stops once the 95% interval
+# on every shooter's mean shot count is narrower than target_ci shots; a series condition
+# once that holds at every game number; a race at race_games games. A condition's own
+# target_games replaces the interval rule. Finished conditions hand their workers to the
+# rest; raising a target resumes a condition where it stopped.
+target_ci = 0.1
+race_games = 1_000_000
 
 [[condition]]
 id = "study1-random"
 study = "1"
 label = "Random fire"
 shooters = ["random-repeat", "random"]
+# Checked against exact answers rather than estimated, so the plan's 1M games suffice.
+target_games = 1_000_000
 
 [[condition]]
 id = "study2-search"

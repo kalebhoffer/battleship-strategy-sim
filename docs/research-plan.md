@@ -155,6 +155,14 @@ The full Bayesian shooter is the expensive one. Start with rejection sampling an
 
 Stop adding games once the confidence interval on the mean shot count is narrower than 0.1 shots.
 
+How the live lab applies this (set 2026-10-24, before any analysis):
+
+- Single-shooter conditions stop once the 95% interval on every shooter's mean shot count is narrower than 0.1 shots.
+- Series (Study 8) stop once that holds at every game number, for every shooter.
+- Races stop at 1,000,000 games per pairing.
+- Random fire stops at 1,000,000 games: it is checked against exact answers, not estimated.
+- A finished condition's workers go to the conditions still running. Stopping depends only on interval width, never on which shooter is ahead.
+
 ---
 
 ## 7. Outcome Metrics
