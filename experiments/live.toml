@@ -58,7 +58,7 @@ shooters = ["random", "hunt-target", "hunt-target-parity", "probability-map"]
 id = "study4-naive"
 study = "4"
 group = "Hiding ships"
-label = "One ship at a time"
+label = "One at a time"
 placer = "naive"
 shooters = ["random", "hunt-target", "hunt-target-parity", "probability-map"]
 
