@@ -54,5 +54,7 @@ cat > "$PLIST" <<EOF
 EOF
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+# bootout returns before the old job is gone; bootstrap fails if it's still loaded.
+while launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; do sleep 1; done
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 echo "Installed $PLIST ($WORKERS workers). Logs: $REPO/lab-state/lab.log"

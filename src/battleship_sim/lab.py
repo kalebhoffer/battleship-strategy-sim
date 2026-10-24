@@ -357,13 +357,19 @@ def git_commit(cwd: Path) -> tuple[str | None, bool]:
 
 
 def upload(path: Path, dest: str, log=print) -> None:
-    """Copy the snapshot to the web server. rsync writes a temp file and renames it."""
+    """Copy the snapshot to the web server. rsync writes a temp file and renames it.
+
+    Only options macOS's openrsync also supports: -p keeps the file's 644 mode.
+    """
+    path.chmod(0o644)
     try:
         subprocess.run(
-            ["rsync", "-q", "--chmod=F644", "-e", "ssh -o BatchMode=yes -o ConnectTimeout=15",
+            ["rsync", "-q", "-p", "-e", "ssh -o BatchMode=yes -o ConnectTimeout=15",
              str(path), dest],
-            check=True, timeout=60, capture_output=True,
+            check=True, timeout=60, capture_output=True, text=True,
         )
+    except subprocess.CalledProcessError as e:
+        log(f"lab: upload failed, will retry next publish: {(e.stderr or '').strip()}")
     except (OSError, subprocess.SubprocessError) as e:
         log(f"lab: upload failed, will retry next publish ({e})")
 

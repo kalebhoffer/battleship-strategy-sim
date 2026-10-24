@@ -132,3 +132,16 @@ def test_lab_refuses_dirty_source(monkeypatch):
     monkeypatch.setattr("battleship_sim.lab.git_commit", lambda _: ("abc", True))
     with pytest.raises(SystemExit):
         main(["lab", "--max-batches", "0"])
+
+
+def test_upload_reports_rsync_errors(tmp_path):
+    from battleship_sim.lab import upload
+
+    snap = tmp_path / "x.json"
+    snap.write_text("{}")
+    logs = []
+    upload(snap, str(tmp_path / "missing-dir" / "deeper" / ""), logs.append)
+    assert logs and "upload failed" in logs[0]
+    upload(snap, str(tmp_path / "out.json"), logs.append)
+    assert (tmp_path / "out.json").read_text() == "{}"
+    assert len(logs) == 1
