@@ -2,10 +2,11 @@
 # Run the live lab as a low-priority background job on a Mac (a per-user LaunchAgent).
 # It starts at login, restarts if it stops, and yields the CPU to anything you're doing.
 #
-#   deploy/macos/install.sh [UPLOAD_DEST] [WORKERS]
+#   deploy/macos/install.sh [UPLOAD_DEST] [WORKERS] [SLOW_WORKERS]
 #
 # UPLOAD_DEST is an rsync destination such as user@host:/opt/battleship-lab/public/
-# (key-based SSH required). Leave it out to keep the snapshot local.
+# (key-based SSH required). Leave it out to keep the snapshot local. SLOW_WORKERS is how
+# many of the WORKERS go to the lane = "slow" conditions (default: a quarter).
 #
 # Stop:      launchctl bootout gui/$(id -u)/com.kalebhoffer.battleship-lab
 # Start:     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kalebhoffer.battleship-lab.plist
@@ -17,9 +18,14 @@ LABEL=com.kalebhoffer.battleship-lab
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 UPLOAD=${1:-}
 WORKERS=${2:-8}
+SLOW=${3:-}
 UV=$(command -v uv)
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
+SLOW_ARGS=""
+if [ -n "$SLOW" ]; then
+  SLOW_ARGS="<string>--slow-workers</string><string>$SLOW</string>"
+fi
 UPLOAD_ARGS=""
 if [ -n "$UPLOAD" ]; then
   UPLOAD_ARGS="<string>--upload</string><string>$UPLOAD</string>"
@@ -37,6 +43,7 @@ cat > "$PLIST" <<EOF
     <string>$UV</string><string>run</string><string>--frozen</string>
     <string>battleship-sim</string><string>lab</string>
     <string>--workers</string><string>$WORKERS</string>
+    $SLOW_ARGS
     $UPLOAD_ARGS
   </array>
   <key>WorkingDirectory</key><string>$REPO</string>
@@ -57,4 +64,4 @@ launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 # bootout returns before the old job is gone; bootstrap fails if it's still loaded.
 while launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; do sleep 1; done
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "Installed $PLIST ($WORKERS workers). Logs: $REPO/lab-state/lab.log"
+echo "Installed $PLIST ($WORKERS workers${SLOW:+, $SLOW slow}). Logs: $REPO/lab-state/lab.log"
