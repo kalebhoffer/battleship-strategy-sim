@@ -14,9 +14,7 @@ seed = "2026"
 # The first batch of each condition is batch_games (or its own `batch`); after that each
 # batch is sized to take about batch_seconds, so every condition gets a fair share of time.
 batch_games = 500
-# Raised from 3 to 30 once only the slow Bayesian conditions were left: longer batches
-# give each worker several games, so fewer sit idle waiting for one long game.
-batch_seconds = 30
+batch_seconds = 3
 # When to stop (research plan, section 6). A solve condition stops once the 95% interval
 # on every shooter's mean shot count is narrower than target_ci shots; a series condition
 # once that holds at every game number; a race at race_games games. A condition's own
