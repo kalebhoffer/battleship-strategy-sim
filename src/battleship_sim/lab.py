@@ -679,7 +679,8 @@ def run_lab(
         are dropped, and the next run starts from the last recorded game."""
         queued: deque[tuple[int, list[Future]]] = deque()
         start = next_game(cond)
-        last = time.monotonic()
+        began = time.monotonic()
+        recorded = 0
         rounds = 0
         try:
             while not stop.is_set() and (max_batches is None or rounds < max_batches):
@@ -692,9 +693,10 @@ def run_lab(
                     start += count
                 count, futures = queued.popleft()
                 played = _collect(cond, futures)
-                now = time.monotonic()
-                note_pace(cond, count, now - last)
-                last = now
+                # Pace over the whole run: queued batches finish close together, so the
+                # gap between two completions says nothing about speed.
+                recorded += count
+                pace[cond.id] = recorded / max(time.monotonic() - began, 1e-3)
                 record(cond, played)
                 rounds += 1
         finally:

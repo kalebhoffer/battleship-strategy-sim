@@ -432,3 +432,23 @@ lane = "slow"
         (s,) = cond["shooters"]
         assert s["mean"] == pytest.approx(offline["mean"])
         assert s["ci95"] == pytest.approx(offline["ci95"])
+
+
+def test_pipelined_batches_stay_sized_to_the_time_budget(tmp_path):
+    """Queued batches finish close together; that must not read as a huge pace."""
+    config = tmp_path / "live.toml"
+    config.write_text("""
+seed = "q"
+batch_games = 4
+batch_seconds = 1
+
+[[condition]]
+id = "careful"
+shooters = ["bayes:3"]
+rules = { feedback = "sink-only" }
+lane = "slow"
+""")
+    state = run_lab(config, tmp_path / "state", tmp_path / "pub.json", workers=2,
+                    publish_every=0, max_batches=6, log=lambda _: None)
+    # Six batches of about a second each, not one runaway batch.
+    assert state["conditions"]["careful"]["games"] < 200
