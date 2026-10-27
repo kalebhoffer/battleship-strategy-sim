@@ -1,8 +1,8 @@
 #!/bin/sh
 # Run the live lab as a low-priority background job on a Mac (a per-user LaunchAgent).
 # It starts at login, restarts if it stops, and yields the CPU to anything you're doing.
-# `nice -n 15` does the yielding. launchd's own Nice key (and background jobs) kept every
-# worker on the efficiency cores, which roughly halved the lab's speed.
+# `nice -n 15` does the yielding. ProcessType is Interactive because launchd limits other
+# jobs (and its own Nice key) in ways that left about half the Mac idle while the lab ran.
 #
 #   deploy/macos/install.sh [UPLOAD_DEST] [WORKERS] [SLOW_WORKERS]
 #
@@ -55,7 +55,7 @@ cat > "$PLIST" <<EOF
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>60</integer>
-  <key>ProcessType</key><string>Standard</string>
+  <key>ProcessType</key><string>Interactive</string>
   <key>StandardOutPath</key><string>$REPO/lab-state/lab.log</string>
   <key>StandardErrorPath</key><string>$REPO/lab-state/lab.log</string>
 </dict>
