@@ -32,7 +32,8 @@ import subprocess
 import threading
 import time
 import tomllib
-from concurrent.futures import Executor, ProcessPoolExecutor
+from collections import deque
+from concurrent.futures import Executor, Future, ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,6 +55,7 @@ REPOSITORY = "https://github.com/kalebhoffer/battleship-strategy-sim"
 CANARY_GAMES = 300
 CANARY_SERIES = 10
 MAX_BATCH = 50_000
+PIPELINE_DEPTH = 2  # batches a slow condition keeps queued
 MIN_TARGET_GAMES = 100  # never call an interval "narrow enough" on fewer games than this
 CDF_SHOTS = 100  # the published distribution covers 0..100 shots
 
@@ -620,6 +622,10 @@ def run_lab(
     def run_lane(lane: str, conditions: list[Condition]) -> None:
         rounds = 0
         try:
+            if lane == "slow":
+                (cond,) = conditions
+                play_pipelined(lane, cond)
+                return
             while not stop.is_set() and (max_batches is None or rounds < max_batches):
                 todo = still_running(conditions)
                 if not todo:
@@ -636,31 +642,68 @@ def run_lab(
             if lane_done and not stop.is_set() and not still_running(lanes[lane]):
                 log(f"lab: every {lane} condition reached its target")
 
-    def play_batch(cond: Condition, n: int) -> None:
-        # Only this lane touches this condition, so reading its start is safe unlocked.
+    def next_game(cond: Condition) -> int:
+        # Only this condition's thread touches it, so reading its start is safe unlocked.
         cs = state["conditions"][cond.id]
         if cond.kind == "race":
-            start = cs["race"]["games"]
-        elif cond.kind == "series":
-            start = cs["series"]["series"]
-        else:
-            start = cs["games"]
+            return cs["race"]["games"]
+        if cond.kind == "series":
+            return cs["series"]["series"]
+        return cs["games"]
+
+    def batch_size(cond: Condition, n: int) -> int:
         # Size each batch to take about batch_seconds, from this condition's recent pace,
         # so cheap conditions play many games per turn and expensive ones few, rounded up
         # to a multiple of the workers so none sits idle. Batch size never affects
         # results: games are numbered and always played in order.
         if cond.id in pace and config.batch_seconds > 0:
             count = max(1, min(MAX_BATCH, round(pace[cond.id] * config.batch_seconds)))
-            count = math.ceil(count / n) * n
-        else:
-            count = first_batch(config, cond)
-        began = time.monotonic()
-        if cond.kind == "solve":
-            played = _run_batch(pool, n, config, cond, start, count)
-        else:
-            played = _run_kind_batch(pool, n, config, cond, start, count)
-        rate = count / max(time.monotonic() - began, 1e-3)
+            return math.ceil(count / n) * n
+        return first_batch(config, cond)
+
+    def note_pace(cond: Condition, count: int, seconds: float) -> None:
+        rate = count / max(seconds, 1e-3)
         pace[cond.id] = rate if cond.id not in pace else (pace[cond.id] + rate) / 2
+
+    def play_batch(cond: Condition, n: int) -> None:
+        count = batch_size(cond, n)
+        began = time.monotonic()
+        played = _collect(cond, _submit_batch(pool, n, config, cond, next_game(cond), count))
+        note_pace(cond, count, time.monotonic() - began)
+        record(cond, played)
+
+    def play_pipelined(lane: str, cond: Condition) -> None:
+        """Keep the next batch queued while waiting for the current one, so workers that
+        finish early start on it instead of waiting for the batch's longest game. Batches
+        are still recorded strictly in order; any still queued when the condition stops
+        are dropped, and the next run starts from the last recorded game."""
+        queued: deque[tuple[int, list[Future]]] = deque()
+        start = next_game(cond)
+        last = time.monotonic()
+        rounds = 0
+        try:
+            while not stop.is_set() and (max_batches is None or rounds < max_batches):
+                if not still_running([cond]):
+                    break
+                while len(queued) < PIPELINE_DEPTH:
+                    n = share(lane)
+                    count = batch_size(cond, n)
+                    queued.append((count, _submit_batch(pool, n, config, cond, start, count)))
+                    start += count
+                count, futures = queued.popleft()
+                played = _collect(cond, futures)
+                now = time.monotonic()
+                note_pace(cond, count, now - last)
+                last = now
+                record(cond, played)
+                rounds += 1
+        finally:
+            for _, futures in queued:
+                for f in futures:
+                    f.cancel()
+
+    def record(cond: Condition, played: list) -> None:
+        cs = state["conditions"][cond.id]
         with lock:
             if cond.kind == "race":
                 tally = RaceTally(**cs["race"])
@@ -714,8 +757,23 @@ def first_batch(config: LabConfig, cond: Condition) -> int:
     return cond.batch or config.batch_games
 
 
-def _run_kind_batch(pool: Executor, workers: int, config: LabConfig, cond: Condition,
-                    start: int, count: int) -> list:
+def _submit_batch(pool: Executor, workers: int, config: LabConfig, cond: Condition,
+                  start: int, count: int) -> list[Future]:
+    """Queue `count` games (races, series) numbered from `start`; see _collect."""
+    if cond.kind == "solve":
+        return _submit_solve_batch(pool, workers, config, cond, start, count)
+    return _submit_kind_batch(pool, workers, config, cond, start, count)
+
+
+def _collect(cond: Condition, futures: list[Future]) -> list:
+    """Wait for a batch queued by _submit_batch and return its games in order."""
+    if cond.kind == "solve":
+        return [g for f in futures for g in f.result()[0]]
+    return [x for f in futures for x in f.result()]
+
+
+def _submit_kind_batch(pool: Executor, workers: int, config: LabConfig, cond: Condition,
+                       start: int, count: int) -> list[Future]:
     """`count` races, or series, numbered from `start`."""
     if cond.kind == "race":
         cfg, chunk = _race_config(cond, cond.seed(config.seed)), race_chunk
@@ -723,16 +781,14 @@ def _run_kind_batch(pool: Executor, workers: int, config: LabConfig, cond: Condi
         cfg, chunk = _series_config(cond, cond.seed(config.seed)), series_chunk
     stop = start + count
     size = max(1, math.ceil(count / workers))
-    futures = [pool.submit(chunk, cfg, a, min(a + size, stop)) for a in range(start, stop, size)]
-    return [x for f in futures for x in f.result()]
+    return [pool.submit(chunk, cfg, a, min(a + size, stop)) for a in range(start, stop, size)]
 
 
-def _run_batch(
+def _submit_solve_batch(
     pool: Executor, workers: int, config: LabConfig, cond: Condition, start: int, count: int
-) -> list[tuple[int, list[tuple[str, SolveResult]]]]:
+) -> list[Future]:
     stop = start + count
     sim = SimConfig(cond.shooters, cond.placer, stop, cond.seed(config.seed), cond.rules)
     size = max(1, math.ceil((stop - start) / workers))
     bounds = [(s, min(s + size, stop)) for s in range(start, stop, size)]
-    futures = [pool.submit(_play_chunk, sim, a, b) for a, b in bounds]
-    return [g for f in futures for g in f.result()[0]]
+    return [pool.submit(_play_chunk, sim, a, b) for a, b in bounds]
