@@ -1,8 +1,8 @@
 #!/bin/sh
 # Run the live lab as a low-priority background job on a Mac (a per-user LaunchAgent).
 # It starts at login, restarts if it stops, and yields the CPU to anything you're doing.
-# Nice 15 does the yielding. It is a Standard process, not a background one: macOS keeps
-# background processes on the efficiency cores, which roughly halved the lab's speed.
+# `nice -n 15` does the yielding. launchd's own Nice key (and background jobs) kept every
+# worker on the efficiency cores, which roughly halved the lab's speed.
 #
 #   deploy/macos/install.sh [UPLOAD_DEST] [WORKERS] [SLOW_WORKERS]
 #
@@ -42,6 +42,7 @@ cat > "$PLIST" <<EOF
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
+    <string>/usr/bin/nice</string><string>-n</string><string>15</string>
     <string>$UV</string><string>run</string><string>--frozen</string>
     <string>battleship-sim</string><string>lab</string>
     <string>--workers</string><string>$WORKERS</string>
@@ -54,7 +55,6 @@ cat > "$PLIST" <<EOF
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>60</integer>
-  <key>Nice</key><integer>15</integer>
   <key>ProcessType</key><string>Standard</string>
   <key>StandardOutPath</key><string>$REPO/lab-state/lab.log</string>
   <key>StandardErrorPath</key><string>$REPO/lab-state/lab.log</string>
