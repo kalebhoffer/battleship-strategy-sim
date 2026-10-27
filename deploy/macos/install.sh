@@ -1,6 +1,8 @@
 #!/bin/sh
 # Run the live lab as a low-priority background job on a Mac (a per-user LaunchAgent).
 # It starts at login, restarts if it stops, and yields the CPU to anything you're doing.
+# Nice 15 does the yielding. It is a Standard process, not a background one: macOS keeps
+# background processes on the efficiency cores, which roughly halved the lab's speed.
 #
 #   deploy/macos/install.sh [UPLOAD_DEST] [WORKERS] [SLOW_WORKERS]
 #
@@ -53,7 +55,7 @@ cat > "$PLIST" <<EOF
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>60</integer>
   <key>Nice</key><integer>15</integer>
-  <key>LowPriorityIO</key><true/>
+  <key>ProcessType</key><string>Standard</string>
   <key>StandardOutPath</key><string>$REPO/lab-state/lab.log</string>
   <key>StandardErrorPath</key><string>$REPO/lab-state/lab.log</string>
 </dict>
