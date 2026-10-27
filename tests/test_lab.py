@@ -401,3 +401,34 @@ length = 3
     by_game = snap["series"]["shooters"]["hunt-target"]
     assert max(g["ci95"][1] - g["ci95"][0] for g in by_game) < 6.0
     assert state["conditions"]["learn"]["series"]["series"] < 40 * (400 // 3)
+
+
+def test_slow_conditions_run_side_by_side_and_stay_reproducible(tmp_path):
+    config = tmp_path / "live.toml"
+    config.write_text("""
+seed = "p"
+batch_games = 6
+batch_seconds = 0
+
+[[condition]]
+id = "sink"
+shooters = ["bayes:3"]
+rules = { feedback = "sink-only" }
+lane = "slow"
+
+[[condition]]
+id = "hit"
+shooters = ["bayes:3"]
+rules = { feedback = "hit-only" }
+lane = "slow"
+""")
+    state = run_lab(config, tmp_path / "state", tmp_path / "pub.json", workers=3,
+                    publish_every=0, max_batches=3, log=lambda _: None)
+    assert state["conditions"]["sink"]["games"] == state["conditions"]["hit"]["games"] == 18
+    for cond in json.loads((tmp_path / "pub.json").read_text())["conditions"]:
+        out = tmp_path / cond["id"]
+        main([*shlex.split(cond["reproduce"])[1:], "--workers", "1", "--out", str(out)])
+        offline = json.loads((out / "summary.json").read_text())["shooters"]["bayes:3"]
+        (s,) = cond["shooters"]
+        assert s["mean"] == pytest.approx(offline["mean"])
+        assert s["ci95"] == pytest.approx(offline["ci95"])

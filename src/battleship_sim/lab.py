@@ -580,13 +580,18 @@ def run_lab(
         sizes = {"fast": max(1, workers - slow), "slow": slow}
     else:
         sizes = dict.fromkeys(lanes, workers)
-    running = dict.fromkeys(lanes, True)
+    # The fast lane is one thread taking turns through its conditions. Each slow condition
+    # gets a thread of its own: while one waits on its batch's longest game, the others'
+    # games keep the idle workers busy.
+    groups = [("fast", lanes["fast"])] if "fast" in lanes else []
+    groups += [("slow", [c]) for c in lanes.get("slow", [])]
+    running = {k: sum(1 for lane, _ in groups if lane == k) for k in lanes}
     finished: set[str] = set()
 
     def share(lane: str) -> int:
         """Workers this lane may use now: all of them once the other lane is done."""
         with lock:
-            alone = sum(running.values()) < 2
+            alone = sum(1 for v in running.values() if v) < 2
         return workers if alone else sizes[lane]
 
     def publish() -> None:
@@ -612,13 +617,12 @@ def run_lab(
                 log(f"lab: {cond.id} reached its target at {games:,} games; stopping it")
         return out
 
-    def run_lane(lane: str) -> None:
+    def run_lane(lane: str, conditions: list[Condition]) -> None:
         rounds = 0
         try:
             while not stop.is_set() and (max_batches is None or rounds < max_batches):
-                todo = still_running(lanes[lane])
+                todo = still_running(conditions)
                 if not todo:
-                    log(f"lab: every {lane} condition reached its target")
                     break
                 for cond in todo:
                     if stop.is_set():
@@ -627,7 +631,10 @@ def run_lab(
                 rounds += 1
         finally:
             with lock:
-                running[lane] = False
+                running[lane] -= 1
+                lane_done = running[lane] == 0
+            if lane_done and not stop.is_set() and not still_running(lanes[lane]):
+                log(f"lab: every {lane} condition reached its target")
 
     def play_batch(cond: Condition, n: int) -> None:
         # Only this lane touches this condition, so reading its start is safe unlocked.
@@ -678,8 +685,9 @@ def run_lab(
     pool = ProcessPoolExecutor(max_workers=workers)
     try:
         sync_fingerprints(config, state, log, pool)
-        threads = [threading.Thread(target=run_lane, args=(k,), name=f"lab-{k}", daemon=True)
-                   for k in lanes]
+        threads = [threading.Thread(target=run_lane, args=(lane, conds), daemon=True,
+                                    name=f"lab-{lane}-{i}")
+                   for i, (lane, conds) in enumerate(groups)]
         for t in threads:
             t.start()
         last_publish = time.monotonic()
