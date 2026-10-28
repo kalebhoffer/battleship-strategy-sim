@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 
 from battleship_sim.cli import main
-from battleship_sim.lab import fingerprint, hist_quantile, load_config, run_lab
+from battleship_sim.lab import (
+    MIN_TARGET_GAMES,
+    fingerprint,
+    hist_quantile,
+    load_config,
+    run_lab,
+)
 from battleship_sim.rules import Rules
 from battleship_sim.stats import quantile
 
@@ -452,3 +458,54 @@ lane = "slow"
                     publish_every=0, max_batches=6, log=lambda _: None)
     # Six batches of about a second each, not one runaway batch.
     assert state["conditions"]["careful"]["games"] < 200
+
+
+def test_shooters_stop_one_by_one_and_stay_reproducible(tmp_path):
+    """Under an interval target a precise shooter stops while a noisy one keeps going,
+    and each one's published numbers still replay exactly."""
+    config = tmp_path / "live.toml"
+    config.write_text("""
+seed = "u"
+batch_games = 100
+batch_seconds = 0
+target_ci = 3.0
+
+[[condition]]
+id = "mixed"
+shooters = ["hunt-target-parity", "random"]
+""")
+    logs = []
+    state = run_lab(config, tmp_path / "state", tmp_path / "pub.json", workers=2,
+                    publish_every=0, max_batches=30, log=logs.append)
+    cs = state["conditions"]["mixed"]
+    parity, rand = cs["shooters"]["hunt-target-parity"]["n"], cs["shooters"]["random"]["n"]
+    # Random fire's shot counts bunch near 100 (sd ~4), so it is narrow long before
+    # hunt-target-parity (sd ~9): it stops first and parity plays on alone.
+    assert cs["stopped"] == ["random", "hunt-target-parity"]
+    assert MIN_TARGET_GAMES <= rand < parity == cs["games"]
+    assert any("random reached the target" in line for line in logs)
+    (cond,) = json.loads((tmp_path / "pub.json").read_text())["conditions"]
+    assert cond["done"]
+    by_name = {s["name"]: s for s in cond["shooters"]}
+    assert by_name["random"]["stopped"] and by_name["random"]["games"] == rand
+    (pair,) = cond["paired"]
+    assert pair["games"] == min(parity, rand)
+    commands = cond["reproduce"].split(" && ")
+    assert len(commands) == 2
+    for i, command in enumerate(commands):
+        out = tmp_path / f"replay-{i}"
+        main([*shlex.split(command)[1:], "--workers", "1", "--out", str(out)])
+        for name, offline in json.loads((out / "summary.json").read_text())["shooters"].items():
+            assert by_name[name]["games"] == offline["games"]
+            assert by_name[name]["mean"] == pytest.approx(offline["mean"])
+            assert by_name[name]["ci95"] == pytest.approx(offline["ci95"])
+
+
+def test_stopping_a_shooter_leaves_the_others_games_unchanged():
+    from battleship_sim.simulate import SimConfig, play_game
+
+    both = SimConfig(("hunt-target", "probability-map"), seed="v", rules=Rules())
+    alone = SimConfig(("probability-map",), seed="v", rules=Rules())
+    for i in range(20):
+        assert dict(play_game(both, i))["probability-map"] == dict(play_game(alone, i))[
+            "probability-map"]

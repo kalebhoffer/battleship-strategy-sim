@@ -18,6 +18,12 @@ interval on every shooter's mean shot count (for a series, at every game number)
 than `target_ci`, or `target_games` games. Its workers then go to the conditions still
 running. Targets are checked against the saved totals, so raising one in live.toml
 resumes the condition where it stopped.
+
+Under an interval target, each shooter also stops on its own once its interval is narrow
+enough, so a cheap shooter that is already precise doesn't wait on an expensive one (or
+the other way round). The stop is saved and permanent: a shooter's games are always
+games 0..n-1 of the condition, so `battleship-sim run` with that shooter and `-n n`
+reproduces it. Tightening target_ci later does not resume a stopped shooter.
 """
 
 from __future__ import annotations
@@ -339,9 +345,36 @@ def reached_target(config: LabConfig, cond: Condition, cs: dict | None) -> bool:
     if "games" in target and cs["games"] >= target["games"]:
         return True
     if "ci95_width" in target:
+        if _stops_per_shooter(cond, target):
+            return not active_shooters(config, cond, cs)
         width = widest_interval(cs)
         return width is not None and width < target["ci95_width"]
     return False
+
+
+def _stops_per_shooter(cond: Condition, target: dict) -> bool:
+    return cond.kind == "solve" and "ci95_width" in target and "games" not in target
+
+
+def active_shooters(config: LabConfig, cond: Condition, cs: dict) -> tuple[str, ...]:
+    """The shooters of a solve condition that still need games, in configured order.
+
+    A shooter whose interval is narrower than the target is added to the condition's
+    saved `stopped` list and never plays again, even if a few games already queued for
+    it later widen its interval slightly: its games must stay one unbroken run from game
+    0. Call with the state lock held (this records new stops)."""
+    target = target_of(config, cond)
+    if not _stops_per_shooter(cond, target):
+        return cond.shooters
+    stopped = cs.setdefault("stopped", [])
+    for name in cond.shooters:
+        s = cs["shooters"].get(name)
+        if name in stopped or not s or s["n"] < MIN_TARGET_GAMES:
+            continue
+        _, _, low, high = _moments(s["n"], s["sum"], s["sumsq"])
+        if high - low < target["ci95_width"]:
+            stopped.append(name)
+    return tuple(name for name in cond.shooters if name not in stopped)
 
 
 def snapshot(config: LabConfig, state: dict, commit: str | None) -> dict:
@@ -360,6 +393,7 @@ def snapshot(config: LabConfig, state: dict, commit: str | None) -> dict:
                 entry = {
                     "name": name,
                     "games": s["n"],
+                    "stopped": name in cs.get("stopped", []),
                     "mean": mean,
                     "ci95": [low, high],
                     "sd": sd,
@@ -417,7 +451,9 @@ def snapshot(config: LabConfig, state: dict, commit: str | None) -> dict:
                 "done": reached_target(config, cond, cs),
                 "shooters": shooters,
                 "paired": pairs,
-                "reproduce": reproduce_command(cond, config.seed, cs["games"] if cs else 0),
+                "reproduce": reproduce_command(
+                    cond, config.seed, cs["games"] if cs else 0,
+                    {k: v["n"] for k, v in cs["shooters"].items()} if cs else None),
             }
         )
     return {
@@ -431,7 +467,10 @@ def snapshot(config: LabConfig, state: dict, commit: str | None) -> dict:
     }
 
 
-def reproduce_command(cond: Condition, seed: str, games: int) -> str:
+def reproduce_command(cond: Condition, seed: str, games: int,
+                      shooter_games: dict[str, int] | None = None) -> str:
+    """The command that replays the condition. When its shooters stopped at different
+    game counts, one `run` per count, joined with &&."""
     flags = _rule_flags(cond.rules)
     if cond.kind == "race":
         a, b = cond.shooters
@@ -444,9 +483,15 @@ def reproduce_command(cond: Condition, seed: str, games: int) -> str:
                          f"--seed '{cond.seed(seed)}'", *flags])
     if cond.placer != "uniform":
         flags.insert(0, f"--placer {cond.placer}")
-    return " ".join(
-        ["battleship-sim run", *cond.shooters, f"-n {games}", f"--seed '{cond.seed(seed)}'",
-         *flags]
+    counts: dict[int, list[str]] = {}
+    for name in cond.shooters:
+        counts.setdefault((shooter_games or {}).get(name, games), []).append(name)
+    if len(counts) == 1:
+        counts = {games: list(cond.shooters)}
+    return " && ".join(
+        " ".join(["battleship-sim run", *names, f"-n {n}", f"--seed '{cond.seed(seed)}'",
+                  *flags])
+        for n, names in sorted(counts.items(), reverse=True)
     )
 
 
@@ -564,6 +609,7 @@ def run_lab(
     lock = threading.Lock()
     stop = threading.Event()
     pace: dict[str, float] = {}  # games (series, for series conditions) per second
+    playing: dict[str, tuple[str, ...]] = {}  # shooters each condition last played
 
     def _stop(*_):
         stop.set()
@@ -665,10 +711,26 @@ def run_lab(
         rate = count / max(seconds, 1e-3)
         pace[cond.id] = rate if cond.id not in pace else (pace[cond.id] + rate) / 2
 
+    def shooters_now(cond: Condition) -> tuple[str, ...]:
+        """The shooters to play next. When the set shrinks, games get cheaper, so the
+        pace measured with the old set is dropped."""
+        with lock:
+            names = (active_shooters(config, cond, state["conditions"][cond.id])
+                     if cond.kind == "solve" else cond.shooters)
+        if names != playing.setdefault(cond.id, names):
+            dropped = [x for x in playing[cond.id] if x not in names]
+            log(f"lab: {cond.id}: {', '.join(dropped)} reached the target; "
+                f"{', '.join(names) or 'none'} still playing")
+            playing[cond.id] = names
+            pace.pop(cond.id, None)
+        return names
+
     def play_batch(cond: Condition, n: int) -> None:
+        names = shooters_now(cond)
         count = batch_size(cond, n)
         began = time.monotonic()
-        played = _collect(cond, _submit_batch(pool, n, config, cond, next_game(cond), count))
+        played = _collect(cond, _submit_batch(pool, n, config, cond, next_game(cond), count,
+                                              names))
         note_pace(cond, count, time.monotonic() - began)
         record(cond, played)
 
@@ -688,8 +750,13 @@ def run_lab(
                     break
                 while len(queued) < PIPELINE_DEPTH:
                     n = share(lane)
+                    names = shooters_now(cond)
+                    if cond.id not in pace and recorded:
+                        # The shooter set changed: measure the new pace from here.
+                        began, recorded = time.monotonic(), 0
                     count = batch_size(cond, n)
-                    queued.append((count, _submit_batch(pool, n, config, cond, start, count)))
+                    queued.append((count, _submit_batch(pool, n, config, cond, start, count,
+                                                        names)))
                     start += count
                 count, futures = queued.popleft()
                 played = _collect(cond, futures)
@@ -760,10 +827,13 @@ def first_batch(config: LabConfig, cond: Condition) -> int:
 
 
 def _submit_batch(pool: Executor, workers: int, config: LabConfig, cond: Condition,
-                  start: int, count: int) -> list[Future]:
-    """Queue `count` games (races, series) numbered from `start`; see _collect."""
+                  start: int, count: int, shooters: tuple[str, ...] | None = None
+                  ) -> list[Future]:
+    """Queue `count` games (races, series) numbered from `start`; see _collect. A solve
+    batch plays `shooters` (default: all of the condition's)."""
     if cond.kind == "solve":
-        return _submit_solve_batch(pool, workers, config, cond, start, count)
+        return _submit_solve_batch(pool, workers, config, cond, start, count,
+                                   shooters or cond.shooters)
     return _submit_kind_batch(pool, workers, config, cond, start, count)
 
 
@@ -787,10 +857,13 @@ def _submit_kind_batch(pool: Executor, workers: int, config: LabConfig, cond: Co
 
 
 def _submit_solve_batch(
-    pool: Executor, workers: int, config: LabConfig, cond: Condition, start: int, count: int
+    pool: Executor, workers: int, config: LabConfig, cond: Condition, start: int, count: int,
+    shooters: tuple[str, ...],
 ) -> list[Future]:
+    # Each shooter's game i is seeded by its name and i alone, so playing a subset leaves
+    # every other shooter's games unchanged.
     stop = start + count
-    sim = SimConfig(cond.shooters, cond.placer, stop, cond.seed(config.seed), cond.rules)
+    sim = SimConfig(shooters, cond.placer, stop, cond.seed(config.seed), cond.rules)
     size = max(1, math.ceil((stop - start) / workers))
     bounds = [(s, min(s + size, stop)) for s in range(start, stop, size)]
     return [pool.submit(_play_chunk, sim, a, b) for a, b in bounds]
