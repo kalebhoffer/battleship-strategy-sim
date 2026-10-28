@@ -162,6 +162,7 @@ How the live lab applies this (set 2026-10-24, before any analysis):
 - Races stop at 1,000,000 games per pairing.
 - Random fire stops at 1,000,000 games: it is checked against exact answers, not estimated.
 - A finished condition's workers go to the conditions still running. Stopping depends only on interval width, never on which shooter is ahead.
+- Amended 2026-10-28, before any analysis, to save compute: within a single-shooter condition, each shooter stops on its own once its interval is narrower than 0.1 shots, instead of every shooter playing until the widest interval is. The stop is permanent, so a shooter's games are always games 0..n-1 of its condition and replay with `battleship-sim run` and `-n n`. Paired comparisons use the games both shooters played. Shooters are seeded per game, so no shooter's games changed. The trigger was study7-hit-only, where the expensive Bayesian shooter was already precise but kept playing to narrow two cheap shooters.
 
 ---
 
